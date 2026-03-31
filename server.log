@@ -3,13 +3,26 @@
 WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
  * Running on all addresses (0.0.0.0)
  * Running on http://127.0.0.1:5000
- * Running on http://21.0.4.127:5000
+ * Running on http://21.0.8.234:5000
 Press CTRL+C to quit
-127.0.0.1 - - [31/Mar/2026 11:54:50] "GET /login HTTP/1.1" 200 -
-127.0.0.1 - - [31/Mar/2026 11:54:53] "POST /login HTTP/1.1" 302 -
-127.0.0.1 - - [31/Mar/2026 11:54:53] "POST / HTTP/1.1" 405 -
-127.0.0.1 - - [31/Mar/2026 11:54:56] "POST /login HTTP/1.1" 302 -
-127.0.0.1 - - [31/Mar/2026 11:54:56] "POST / HTTP/1.1" 405 -
-127.0.0.1 - - [31/Mar/2026 11:54:58] "GET /admin HTTP/1.1" 302 -
-127.0.0.1 - - [31/Mar/2026 11:55:01] "POST /login HTTP/1.1" 302 -
-127.0.0.1 - - [31/Mar/2026 11:55:03] "GET /admin HTTP/1.1" 200 -
+127.0.0.1 - - [31/Mar/2026 16:19:05] "GET /login HTTP/1.1" 200 -
+127.0.0.1 - - [31/Mar/2026 16:19:08] "GET /admin HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:19:12] "POST /login HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:19:22] "GET /admin HTTP/1.1" 200 -
+127.0.0.1 - - [31/Mar/2026 16:19:42] "GET /admin/get_pve_templates HTTP/1.1" 200 -
+127.0.0.1 - - [31/Mar/2026 16:19:54] "POST /login HTTP/1.1" 200 -
+127.0.0.1 - - [31/Mar/2026 16:19:54] "GET /course/1 HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:20:12] "POST /login HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:20:12] "GET /course/1 HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:20:15] "POST /login HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:20:15] "GET /course/1 HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:20:15] "GET /dashboard HTTP/1.1" 200 -
+127.0.0.1 - - [31/Mar/2026 16:20:19] "POST /login HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:20:19] "GET / HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:20:19] "GET /dashboard HTTP/1.1" 200 -
+127.0.0.1 - - [31/Mar/2026 16:20:27] "POST /login HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:20:27] "GET /course/1 HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:20:27] "GET /dashboard HTTP/1.1" 200 -
+127.0.0.1 - - [31/Mar/2026 16:20:32] "POST /login HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:20:32] "GET /course/1 HTTP/1.1" 302 -
+127.0.0.1 - - [31/Mar/2026 16:20:32] "GET /dashboard HTTP/1.1" 200 -
