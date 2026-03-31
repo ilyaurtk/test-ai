@@ -620,9 +620,24 @@ def request_terminal(course_id):
         flash('Не удалось создать рабочее место. Проверьте подключение к Proxmox.', 'error')
         return redirect(url_for('view_course', course_id=course_id))
     
-    # Ждем пока контейнер будет создан и запускаем его
+    # Ждем пока контейнер будет создан и готов к запуску
     import time
-    time.sleep(3)  # Даем время на создание контейнера
+    max_wait = 60  # Максимальное время ожидания 60 секунд
+    wait_interval = 2  # Интервал проверки 2 секунды
+    waited = 0
+    
+    while waited < max_wait:
+        time.sleep(wait_interval)
+        waited += wait_interval
+        
+        # Проверяем статус контейнера
+        status = get_container_status(new_vm_id, node)
+        
+        # Если контейнер существует и не в состоянии создания, пробуем запустить
+        if status != 'unknown':
+            # Небольшая дополнительная задержка для полной готовности
+            time.sleep(1)
+            break
     
     if not start_container(new_vm_id, node):
         conn.close()
