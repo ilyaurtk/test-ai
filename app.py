@@ -11,6 +11,7 @@ import asyncio
 import websockets
 import json
 from flask_socketio import SocketIO, emit
+from flask import request as flask_request
 
 # Отключаем предупреждения о самоподписанных SSL сертификатах
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -1025,12 +1026,14 @@ def uploaded_file(filename):
 # WebSocket обработчики для работы с терминалом Proxmox
 @socketio.on('connect')
 def handle_connect():
-    print(f'Клиент подключился: {request.sid}')
+    """Обработка подключения клиента к WebSocket"""
+    app.logger.info(f'Клиент подключился: {flask_request.sid}')
+    emit('connected', {'status': 'ok'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
     """Обработка отключения клиента - завершение сессии и удаление контейнера"""
-    print(f'Клиент отключился: {request.sid}')
+    app.logger.info(f'Клиент отключился: {flask_request.sid}')
     
     # Получаем user_id из session (если доступен)
     from flask import session as flask_session
@@ -1072,6 +1075,44 @@ def handle_disconnect():
         
         conn.close()
 
+@socketio.on('terminal_init')
+def handle_terminal_init(data):
+    """Инициализация сессии терминала при подключении"""
+    session_token = data.get('session_token')
+    
+    if not session_token:
+        emit('terminal_output', {'error': 'Требуется session_token'})
+        return
+    
+    if 'user_id' not in session:
+        emit('terminal_output', {'error': 'Требуется авторизация'})
+        return
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT ts.*, cont.pve_vm_id, cont.pve_node, cont.status as container_status, c.title as course_title
+        FROM terminal_sessions ts
+        JOIN containers cont ON ts.container_id = cont.id
+        JOIN courses c ON ts.course_id = c.id
+        WHERE ts.session_token = ? AND ts.user_id = ?
+    """, (session_token, session.get('user_id')))
+    
+    session_data = cursor.fetchone()
+    conn.close()
+    
+    if not session_data:
+        emit('terminal_output', {'error': 'Сессия не найдена'})
+        return
+    
+    # Проверяем статус контейнера
+    if session_data['container_status'] != 'running':
+        emit('terminal_output', {'error': f'Контейнер не запущен (статус: {session_data["container_status"]})'})
+        return
+    
+    emit('terminal_output', {'output': f'\x1b[32m✓ Сессия инициализирована для VM {session_data["pve_vm_id"]}\x1b[0m\r\n'})
+
 @socketio.on('terminal_input')
 def handle_terminal_input(data):
     """Обработка ввода команд в терминале через WebSocket"""
@@ -1079,14 +1120,19 @@ def handle_terminal_input(data):
     command = data.get('command')
     
     if not session_token or not command:
-        emit('terminal_output', {'error': 'Invalid data'})
+        app.logger.error(f"Invalid data received: session_token={session_token}, command={command}")
+        emit('terminal_output', {'error': 'Неверные данные: требуется session_token и command'})
+        return
+    
+    if 'user_id' not in session:
+        emit('terminal_output', {'error': 'Требуется авторизация'})
         return
     
     conn = get_db()
     cursor = conn.cursor()
     
     cursor.execute("""
-        SELECT ts.*, cont.pve_vm_id, cont.pve_node
+        SELECT ts.*, cont.pve_vm_id, cont.pve_node, cont.status as container_status
         FROM terminal_sessions ts
         JOIN containers cont ON ts.container_id = cont.id
         WHERE ts.session_token = ? AND ts.user_id = ?
@@ -1096,8 +1142,16 @@ def handle_terminal_input(data):
     conn.close()
     
     if not session_data:
-        emit('terminal_output', {'error': 'Session not found'})
+        app.logger.error(f"Session not found: {session_token}")
+        emit('terminal_output', {'error': f'Сессия не найдена (token: {session_token})'})
         return
+    
+    # Проверяем статус контейнера
+    if session_data['container_status'] != 'running':
+        emit('terminal_output', {'error': f'Контейнер не запущен (статус: {session_data["container_status"]})'})
+        return
+    
+    app.logger.info(f"Executing command in VM {session_data['pve_vm_id']}: {command}")
     
     # Выполняем команду через Proxmox API
     endpoint = f"nodes/{session_data['pve_node']}/lxc/{session_data['pve_vm_id']}/exec"
@@ -1114,12 +1168,14 @@ def handle_terminal_input(data):
             try:
                 decoded_output = base64.b64decode(output).decode('utf-8', errors='replace')
                 emit('terminal_output', {'output': decoded_output})
-            except:
+            except Exception as e:
+                app.logger.error(f"Decode error: {e}")
                 emit('terminal_output', {'output': str(result['data'])})
         else:
             emit('terminal_output', {'output': ''})
     else:
-        emit('terminal_output', {'error': 'Failed to execute command'})
+        app.logger.error(f"Failed to execute command: {result}")
+        emit('terminal_output', {'error': 'Ошибка выполнения команды. Проверьте подключение к Proxmox.'})
 
 @socketio.on('terminal_resize')
 def handle_terminal_resize(data):
