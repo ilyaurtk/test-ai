@@ -603,8 +603,10 @@ def request_terminal(course_id):
     while new_vm_id in used_ids:
         new_vm_id += 1
     
-    # Генерируем уникальное имя контейнера
-    container_name = f"user{session['user_id']}_course{course_id}_{uuid.uuid4().hex[:8]}"
+    # Генерируем уникальное имя контейнера (только lowercase буквы, цифры и дефисы для совместимости с DNS)
+    # Формат должен начинаться с буквы и соответствовать RFC 1123
+    random_suffix = uuid.uuid4().hex[:8]
+    container_name = f"u{session['user_id']}-c{course_id}-{random_suffix}"
     
     # Клонируем шаблон
     if not clone_container(template_vm_id, new_vm_id, container_name, node):
