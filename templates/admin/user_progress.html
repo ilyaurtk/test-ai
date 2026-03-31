@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Прогресс пользователя {{ user.username }} - Админ-панель{% endblock %}
+
+{% block content %}
+<div style="margin-bottom: 2rem;">
+    <a href="{{ url_for('admin_users') }}" class="btn">← Назад к пользователям</a>
+</div>
+
+<h1 style="color: var(--primary-green); margin-bottom: 0.5rem;">Прогресс: {{ user.username }}</h1>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Курс</th>
+                <th>Статус</th>
+                <th>Текущий шаг</th>
+                <th>Начат</th>
+                <th>Завершен</th>
+                <th>Последний доступ</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in progress %}
+            <tr>
+                <td>{{ item.title }}</td>
+                <td>
+                    {% if item.status == 'completed' %}
+                        <span class="badge badge-success">Завершено</span>
+                    {% elif item.status == 'in_progress' %}
+                        <span class="badge badge-warning">В процессе</span>
+                    {% else %}
+                        <span class="badge badge-info">{{ item.status }}</span>
+                    {% endif %}
+                </td>
+                <td>{{ item.current_step }}/10</td>
+                <td>{{ item.started_at or '-' }}</td>
+                <td>{{ item.completed_at or '-' }}</td>
+                <td>{{ item.last_accessed or '-' }}</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="6" style="text-align: center; color: var(--text-secondary);">Пользователь еще не начал ни один курс</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
