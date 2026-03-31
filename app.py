@@ -1145,16 +1145,12 @@ def handle_terminal_input(data):
         emit('terminal_output', {'error': 'Неверные данные: требуется session_token и command'})
         return
     
-    if 'user_id' not in session:
-        emit('terminal_output', {'error': 'Требуется авторизация'})
-        return
-    
-    # Получаем информацию о подключении из хранилища
+    # Получаем информацию о подключении из хранилища по sid
     sid = flask_request.sid
     conn_info = console_connections.get(sid)
     
     if not conn_info:
-        # Если нет информации в хранилище, пробуем найти сессию в БД
+        # Если нет информации в хранилище, пробуем найти сессию в БД по токену
         conn = get_db()
         cursor = conn.cursor()
         
@@ -1162,8 +1158,8 @@ def handle_terminal_input(data):
             SELECT ts.*, cont.pve_vm_id, cont.pve_node, cont.status as container_status
             FROM terminal_sessions ts
             JOIN containers cont ON ts.container_id = cont.id
-            WHERE ts.session_token = ? AND ts.user_id = ?
-        """, (session_token, session.get('user_id')))
+            WHERE ts.session_token = ?
+        """, (session_token,))
         
         session_data = cursor.fetchone()
         conn.close()
@@ -1180,66 +1176,91 @@ def handle_terminal_input(data):
         
         vm_id = session_data['pve_vm_id']
         node = session_data['pve_node']
+        
+        # Сохраняем в хранилище для будущих запросов
+        console_connections[sid] = {
+            'vm_id': vm_id,
+            'node': node,
+            'session_token': session_token
+        }
+        conn_info = console_connections[sid]
     else:
         vm_id = conn_info['vm_id']
         node = conn_info['node']
     
     app.logger.info(f"Executing command in VM {vm_id}: {command}")
     
-    # Для LXC контейнеров используем enter в namespace exec
-    # Сначала пробуем выполнить команду напрямую через bash
-    endpoint = f"nodes/{node}/lxc/{vm_id}/status/exec"
-    exec_data = {
-        'command': command,
-        'subsystem': 'login'
-    }
-    result = pve_api_request('POST', endpoint, exec_data)
+    # Получаем ticket для доступа к консоли через termproxy
+    console_ticket = get_container_console_ticket(vm_id, node)
     
-    # Если первый способ не сработал, пробуем альтернативный вариант
-    if not result or 'data' not in result:
-        endpoint = f"nodes/{node}/lxc/{vm_id}/execute"
-        exec_data = {
-            'command': ['/bin/bash', '-c', command]
-        }
-        result = pve_api_request('POST', endpoint, exec_data)
+    if not console_ticket:
+        app.logger.error(f"Failed to get console ticket for VM {vm_id}")
+        emit('terminal_output', {'error': 'Ошибка получения доступа к консоли. Проверьте, запущен ли контейнер.'})
+        return
     
-    # Если все еще нет результата, пробуем через unshare (для некоторых версий Proxmox)
-    if not result or 'data' not in result:
-        endpoint = f"nodes/{node}/lxc/{vm_id}/exec"
-        exec_data = {
-            'command': ['/bin/bash', '-c', command],
-            'subsystem': 'login'
-        }
-        result = pve_api_request('POST', endpoint, exec_data)
-    
-    if result and 'data' in result:
-        output = result['data'].get('outData', '')
-        exit_code = result['data'].get('exitcode', 0)
+    try:
+        # Извлекаем порт и ticket из ответа
+        port = console_ticket.get('port', 8006)
+        ticket = console_ticket.get('ticket', '')
         
-        if output:
-            # Декодируем base64 вывод
-            try:
-                decoded_output = base64.b64decode(output).decode('utf-8', errors='replace')
-                emit('terminal_output', {'output': decoded_output})
-            except Exception as e:
-                app.logger.error(f"Decode error: {e}")
-                emit('terminal_output', {'output': str(result['data'])})
-        elif exit_code == 0:
-            # Команда выполнена успешно, но нет вывода
-            emit('terminal_output', {'output': ''})
+        # Формируем URL для WebSocket подключения к консоли Proxmox
+        config = load_pve_config()
+        if config:
+            host = config['host']
+            verify_ssl = config['verify_ssl']
         else:
-            err_data = result['data'].get('errData', '')
-            if err_data:
-                try:
-                    decoded_err = base64.b64decode(err_data).decode('utf-8', errors='replace')
-                    emit('terminal_output', {'output': decoded_err})
-                except:
-                    emit('terminal_output', {'output': str(result['data'])})
-            else:
-                emit('terminal_output', {'output': f'[Exit code: {exit_code}]'})
-    else:
-        app.logger.error(f"Failed to execute command. Response: {result}")
-        emit('terminal_output', {'error': f'Ошибка выполнения команды. Ответ API: {result}'})
+            host = PVE_HOST
+            verify_ssl = PVE_VERIFY_SSL
+        
+        # Создаем WebSocket подключение к консоли Proxmox
+        import ssl
+        # Termproxy использует специальный формат URL
+        ws_url = f"wss://{host}:{port}/api2/json/nodes/{node}/lxc/{vm_id}/termproxy?ticket={ticket}"
+        
+        # Настройки SSL
+        ssl_context = ssl.create_default_context()
+        if not verify_ssl:
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+        
+        # Подключаемся и отправляем команду
+        import asyncio
+        
+        async def send_command():
+            try:
+                async with websockets.connect(ws_url, ssl=ssl_context, close_timeout=5, ping_interval=None) as websocket:
+                    # Отправляем команду с переводом строки
+                    # Для терминала отправляем как есть, без экранирования
+                    await websocket.send(command + '\n')
+                    
+                    # Читаем ответ (с таймаутом)
+                    try:
+                        response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+                        # Termproxy возвращает данные в формате JSON
+                        try:
+                            resp_data = json.loads(response)
+                            if 'data' in resp_data:
+                                emit('terminal_output', {'output': resp_data['data']})
+                            else:
+                                emit('terminal_output', {'output': response})
+                        except json.JSONDecodeError:
+                            emit('terminal_output', {'output': response})
+                    except asyncio.TimeoutError:
+                        # Команда выполнена, но вывода может не быть
+                        pass
+            except Exception as e:
+                app.logger.error(f"WebSocket error: {e}")
+                emit('terminal_output', {'error': f'Ошибка подключения к консоли: {str(e)}'})
+        
+        # Запускаем асинхронную функцию
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(send_command())
+        loop.close()
+        
+    except Exception as e:
+        app.logger.error(f"Console execution error: {e}")
+        emit('terminal_output', {'error': f'Ошибка выполнения команды: {str(e)}'})
 
 @socketio.on('terminal_resize')
 def handle_terminal_resize(data):
