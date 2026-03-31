@@ -1,31 +1,53 @@
 ```
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
 # Logs and temp files
 *.log
 *.tmp
 *.swp
 
-# Environment
+# Database files
+*.db
+
+# Environment and config files
 .env
 .env.local
-*.env.*
+.env.
 
-# Editors
-.vscode/
-.idea/
+# Cookies and session files
+*.txt
+cookies.txt
 
 # Dependencies
 .venv/
 venv/
 node_modules/
 
-# Build artifacts
+# Compiled and build artifacts
+*.pyc
+__pycache__/
+*.o
+*.obj
+*.so
+*.dll
+*.exe
 dist/
 build/
 target/
+
+# Editors
+.vscode/
+.idea/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# Cache directories
+.mypy_cache/
+.pytest_cache/
+.gradle/
 ```
