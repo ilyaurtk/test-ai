@@ -32,6 +32,47 @@ PVE_PASSWORD = os.getenv('PVE_PASSWORD', '')
 PVE_NODE = os.getenv('PVE_NODE', 'pve')
 PVE_VERIFY_SSL = os.getenv('PVE_VERIFY_SSL', 'false').lower() == 'true'
 
+def save_pve_config(host, port, user, password, node, verify_ssl):
+    """Сохранить конфигурацию Proxmox в базу данных"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS pve_config (
+            id INTEGER PRIMARY KEY,
+            host TEXT,
+            port INTEGER,
+            user TEXT,
+            password TEXT,
+            node TEXT,
+            verify_ssl INTEGER
+        )
+    ''')
+    cursor.execute('DELETE FROM pve_config')
+    cursor.execute('''
+        INSERT INTO pve_config (id, host, port, user, password, node, verify_ssl)
+        VALUES (1, ?, ?, ?, ?, ?, ?)
+    ''', (host, port, user, password, node, 1 if verify_ssl else 0))
+    conn.commit()
+    conn.close()
+
+def load_pve_config():
+    """Загрузить конфигурацию Proxmox из базы данных"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM pve_config WHERE id = 1')
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {
+            'host': row[1],
+            'port': row[2],
+            'user': row[3],
+            'password': row[4],
+            'node': row[5],
+            'verify_ssl': bool(row[6])
+        }
+    return None
+
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 def allowed_file(filename):
@@ -141,13 +182,28 @@ def admin_required(f):
 
 def get_pve_ticket():
     """Получить тикет аутентификации от Proxmox VE"""
-    url = f"https://{PVE_HOST}:{PVE_PORT}/api2/json/access/ticket"
+    # Сначала пробуем загрузить конфигурацию из БД
+    config = load_pve_config()
+    if config:
+        host = config['host']
+        port = config['port']
+        user = config['user']
+        password = config['password']
+        verify_ssl = config['verify_ssl']
+    else:
+        host = PVE_HOST
+        port = PVE_PORT
+        user = PVE_USER
+        password = PVE_PASSWORD
+        verify_ssl = PVE_VERIFY_SSL
+    
+    url = f"https://{host}:{port}/api2/json/access/ticket"
     data = {
-        'username': PVE_USER,
-        'password': PVE_PASSWORD
+        'username': user,
+        'password': password
     }
     try:
-        response = requests.post(url, data=data, verify=PVE_VERIFY_SSL, timeout=10)
+        response = requests.post(url, data=data, verify=verify_ssl, timeout=10)
         if response.status_code == 200:
             result = response.json()
             if 'data' in result:
@@ -160,11 +216,22 @@ def get_pve_ticket():
 
 def pve_api_request(method, endpoint, data=None):
     """Выполнить запрос к Proxmox VE API"""
+    # Загружаем конфигурацию из БД
+    config = load_pve_config()
+    if config:
+        host = config['host']
+        port = config['port']
+        verify_ssl = config['verify_ssl']
+    else:
+        host = PVE_HOST
+        port = PVE_PORT
+        verify_ssl = PVE_VERIFY_SSL
+    
     ticket, csrf_token = get_pve_ticket()
     if not ticket:
         return None
     
-    url = f"https://{PVE_HOST}:{PVE_PORT}/api2/json/{endpoint}"
+    url = f"https://{host}:{port}/api2/json/{endpoint}"
     headers = {
         'Cookie': f'PVEAuthCookie={ticket}',
         'CSRFPreventionToken': csrf_token
@@ -172,13 +239,13 @@ def pve_api_request(method, endpoint, data=None):
     
     try:
         if method == 'GET':
-            response = requests.get(url, headers=headers, verify=PVE_VERIFY_SSL, timeout=10)
+            response = requests.get(url, headers=headers, verify=verify_ssl, timeout=10)
         elif method == 'POST':
-            response = requests.post(url, headers=headers, json=data, verify=PVE_VERIFY_SSL, timeout=10)
+            response = requests.post(url, headers=headers, json=data, verify=verify_ssl, timeout=10)
         elif method == 'PUT':
-            response = requests.put(url, headers=headers, json=data, verify=PVE_VERIFY_SSL, timeout=10)
+            response = requests.put(url, headers=headers, json=data, verify=verify_ssl, timeout=10)
         elif method == 'DELETE':
-            response = requests.delete(url, headers=headers, verify=PVE_VERIFY_SSL, timeout=10)
+            response = requests.delete(url, headers=headers, verify=verify_ssl, timeout=10)
         
         if response.status_code in [200, 201]:
             return response.json()
@@ -189,28 +256,43 @@ def pve_api_request(method, endpoint, data=None):
         print(f"PVE request error: {e}")
         return None
 
-def start_container(vm_id, node=PVE_NODE):
+def get_pve_node():
+    """Получить текущий узел Proxmox из конфигурации"""
+    config = load_pve_config()
+    if config:
+        return config['node']
+    return PVE_NODE
+
+def start_container(vm_id, node=None):
     """Запустить LXC контейнер в Proxmox"""
+    if node is None:
+        node = get_pve_node()
     endpoint = f"nodes/{node}/lxc/{vm_id}/status/start"
     result = pve_api_request('POST', endpoint)
     return result is not None
 
-def stop_container(vm_id, node=PVE_NODE):
+def stop_container(vm_id, node=None):
     """Остановить LXC контейнер в Proxmox"""
+    if node is None:
+        node = get_pve_node()
     endpoint = f"nodes/{node}/lxc/{vm_id}/status/stop"
     result = pve_api_request('POST', endpoint)
     return result is not None
 
-def get_container_status(vm_id, node=PVE_NODE):
+def get_container_status(vm_id, node=None):
     """Получить статус контейнера"""
+    if node is None:
+        node = get_pve_node()
     endpoint = f"nodes/{node}/lxc/{vm_id}/status/current"
     result = pve_api_request('GET', endpoint)
     if result and 'data' in result:
         return result['data'].get('status', 'unknown')
     return 'unknown'
 
-def get_vnc_proxy_url(vm_id, node=PVE_NODE):
+def get_vnc_proxy_url(vm_id, node=None):
     """Получить URL для VNC прокси сессии через Proxmox API"""
+    if node is None:
+        node = get_pve_node()
     endpoint = f"nodes/{node}/lxc/{vm_id}/proxy/vncwebsocket"
     data = {
         'port': 5900,
@@ -221,13 +303,56 @@ def get_vnc_proxy_url(vm_id, node=PVE_NODE):
         return result['data']
     return None
 
-def get_container_console_ticket(vm_id, node=PVE_NODE):
+def get_container_console_ticket(vm_id, node=None):
     """Получить билет для доступа к консоли контейнера через termius/xterm.js"""
+    if node is None:
+        node = get_pve_node()
     endpoint = f"nodes/{node}/lxc/{vm_id}/termproxy"
     result = pve_api_request('POST', endpoint)
     if result and 'data' in result:
         return result['data']
     return None
+
+def get_pve_templates(node=None):
+    """Получить список шаблонов LXC из Proxmox"""
+    if node is None:
+        node = get_pve_node()
+    endpoint = f"nodes/{node}/lxc"
+    result = pve_api_request('GET', endpoint)
+    templates = []
+    if result and 'data' in result:
+        for vm in result['data']:
+            if vm.get('template') == 1 or vm.get('template') == True:
+                templates.append({
+                    'vmid': vm.get('vmid'),
+                    'name': vm.get('name', f'VM {vm.get("vmid")}'),
+                    'description': vm.get('description', ''),
+                    'status': vm.get('status', 'unknown')
+                })
+    return templates
+
+def get_pve_containers(node=None):
+    """Получить список всех LXC контейнеров из Proxmox"""
+    if node is None:
+        node = get_pve_node()
+    endpoint = f"nodes/{node}/lxc"
+    result = pve_api_request('GET', endpoint)
+    containers = []
+    if result and 'data' in result:
+        for vm in result['data']:
+            containers.append({
+                'vmid': vm.get('vmid'),
+                'name': vm.get('name', f'VM {vm.get("vmid")}'),
+                'status': vm.get('status', 'unknown'),
+                'template': vm.get('template', 0),
+                'cpu': vm.get('cpu', 0),
+                'maxcpu': vm.get('maxcpu', 0),
+                'mem': vm.get('mem', 0),
+                'maxmem': vm.get('maxmem', 0),
+                'disk': vm.get('disk', 0),
+                'maxdisk': vm.get('maxdisk', 0)
+            })
+    return containers
 
 @app.route('/')
 def index():
@@ -518,13 +643,58 @@ def admin_dashboard():
     """)
     progress_data = cursor.fetchall()
     
+    # Загружаем конфигурацию PVE
+    pve_config = load_pve_config()
+    
     conn.close()
     
     return render_template('admin_dashboard.html', 
                          users=users, 
                          courses=courses, 
                          containers=containers,
-                         progress_data=progress_data)
+                         progress_data=progress_data,
+                         pve_config=pve_config)
+
+@app.route('/admin/save_pve_config', methods=['POST'])
+@admin_required
+def save_pve_config_route():
+    host = request.form.get('host', '192.168.1.100')
+    port = int(request.form.get('port', 8006))
+    user = request.form.get('user', 'root@pam')
+    password = request.form.get('password', '')
+    node = request.form.get('node', 'pve')
+    verify_ssl = request.form.get('verify_ssl', 'false').lower() == 'true'
+    
+    save_pve_config(host, port, user, password, node, verify_ssl)
+    flash('Конфигурация Proxmox сохранена', 'success')
+    return redirect(url_for('admin_dashboard'))
+
+@app.route('/admin/test_pve_connection')
+@admin_required
+def test_pve_connection():
+    """Проверить подключение к Proxmox и вернуть список шаблонов"""
+    templates = get_pve_templates()
+    all_containers = get_pve_containers()
+    
+    if templates or all_containers:
+        return jsonify({
+            'success': True,
+            'templates': templates,
+            'containers': all_containers,
+            'message': f'Подключение успешно. Найдено шаблонов: {len(templates)}, контейнеров: {len(all_containers)}'
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'message': 'Не удалось подключиться к Proxmox или нет данных'
+        })
+
+@app.route('/admin/get_pve_templates')
+@admin_required
+def get_pve_templates_route():
+    """API endpoint для получения списка шаблонов"""
+    templates = get_pve_templates()
+    return jsonify({'templates': templates})
 
 @app.route('/admin/create_user', methods=['POST'])
 @admin_required
