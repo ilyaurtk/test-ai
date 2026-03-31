@@ -1,57 +1,53 @@
-```
+```gitignore
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
-env/
-venv/
-.venv/
-.ENV
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment
 .env
 .env.local
-.env.*
-.venv.bak/
-venv.bak/
-
-# Database
-*.db
-*.sqlite
-*.sqlite3
-
-# Logs
-*.log
-
-# Temporary files
-*.tmp
-*.temp
-*~
-.swp
-.swo
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+*.env.*
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*.tmp
 
-# Build artifacts
-dist/
-build/
-*.egg-info/
+# Logs
+*.log
+
+# Coverage
 .coverage
+coverage/
 htmlcov/
-.mypy_cache/
-.pytest_cache/
-.tox/
+
+# OS
+.DS_Store
+Thumbs.db
+```
+
+Wait, let me reconsider. The file changes only include `app.py` (Python source) and `templates/admin_dashboard.html` (HTML template). These are both source code/config files, not build artifacts, dependencies, or temporary files. According to rule #6, if the change list contains ONLY source or config files and NO build artifacts, dependencies, or temp files, I should output an EMPTY .gitignore.
+
+```gitignore
+
 ```
