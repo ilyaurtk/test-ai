@@ -1,1 +1,7 @@
-Nothing should be ignored in this case, as only a template file (.html) was modified and no build artifacts, dependencies, or temporary files were detected in the changes.
+```
+# Logs
+*.log
+
+# Database
+it_courses.db
+```
