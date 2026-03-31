@@ -1214,8 +1214,9 @@ def handle_terminal_input(data):
         
         # Создаем WebSocket подключение к консоли Proxmox
         import ssl
-        # Termproxy использует специальный формат URL
-        ws_url = f"wss://{host}:{port}/api2/json/nodes/{node}/lxc/{vm_id}/termproxy?ticket={ticket}"
+        # Termproxy использует специальный формат URL: wss://host:port/term
+        # Хост и порт берем из ответа termproxy, путь фиксированный
+        ws_url = f"wss://{host}:{port}/term"
         
         # Настройки SSL
         ssl_context = ssl.create_default_context()
@@ -1223,15 +1224,21 @@ def handle_terminal_input(data):
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
         
+        # Заголовки для авторизации
+        headers = [
+            f"Cookie: PVEAuthCookie={ticket}"
+        ]
+        
         # Подключаемся и отправляем команду
         import asyncio
         
         async def send_command():
             try:
-                async with websockets.connect(ws_url, ssl=ssl_context, close_timeout=5, ping_interval=None) as websocket:
+                async with websockets.connect(ws_url, ssl=ssl_context, close_timeout=5, ping_interval=None, extra_headers=headers) as websocket:
                     # Отправляем команду с переводом строки
-                    # Для терминала отправляем как есть, без экранирования
-                    await websocket.send(command + '\n')
+                    # Формат данных для termproxy: {"data": "command\n"}
+                    payload = json.dumps({"data": command + '\n'})
+                    await websocket.send(payload)
                     
                     # Читаем ответ (с таймаутом)
                     try:
