@@ -1,0 +1,8 @@
+Flask>=2.0.0
+Flask-SocketIO>=5.3.0
+requests>=2.25.0
+urllib3>=1.26.0
+python-engineio>=4.0.0
+python-socketio>=5.0.0
+websockets>=10.0
+Werkzeug>=2.0.0

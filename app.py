@@ -1,634 +1,742 @@
-#!/usr/bin/env python3
-"""
-IT Course Platform - Backend Application
-Flask-based web application for teaching IT courses with PVE container integration.
-"""
-
 import os
 import sqlite3
-from datetime import datetime
+import requests
+from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, send_from_directory
 from functools import wraps
-from flask import Flask, render_template, request, redirect, url_for, session, flash, g, jsonify
-from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+import uuid
+import base64
+import urllib3
+import asyncio
+import websockets
+import json
+from flask_socketio import SocketIO, emit
+
+# Отключаем предупреждения о самоподписанных SSL сертификатах
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
+app.secret_key = 'it_courses_secret_key_2024'
+app.config['UPLOAD_FOLDER'] = '/workspace/uploads'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
+app.config['SECRET_KEY'] = 'it_courses_secret_key_2024'
 
-DATABASE = 'it_courses.db'
+# Инициализация SocketIO для WebSocket поддержки
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Proxmox VE Configuration
+PVE_HOST = os.getenv('PVE_HOST', '192.168.1.100')
+PVE_PORT = int(os.getenv('PVE_PORT', 8006))
+PVE_USER = os.getenv('PVE_USER', 'root@pam')
+PVE_PASSWORD = os.getenv('PVE_PASSWORD', '')
+PVE_NODE = os.getenv('PVE_NODE', 'pve')
+PVE_VERIFY_SSL = os.getenv('PVE_VERIFY_SSL', 'false').lower() == 'true'
+
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def get_db():
-    """Get database connection."""
-    if not hasattr(g, 'sqlite_db'):
-        g.sqlite_db = sqlite3.connect(DATABASE)
-        g.sqlite_db.row_factory = sqlite3.Row
-    return g.sqlite_db
-
-@app.teardown_appcontext
-def close_db(error):
-    """Close database connection."""
-    if hasattr(g, 'sqlite_db'):
-        g.sqlite_db.close()
+    conn = sqlite3.connect('/workspace/it_courses.db')
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
-    """Initialize the database with required tables."""
-    db = get_db()
-    cursor = db.cursor()
+    conn = get_db()
+    cursor = conn.cursor()
     
-    # Users table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
+            password TEXT NOT NULL,
             role TEXT DEFAULT 'student',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
-    # Containers table (PVE container templates)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS containers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            description TEXT,
-            pve_node TEXT NOT NULL,
-            pve_container_id TEXT,
-            docker_image TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Courses table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS courses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
             description TEXT,
             content TEXT,
-            container_id INTEGER,
             image_path TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (container_id) REFERENCES containers(id)
+            container_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
-    # User progress table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS containers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            pve_vm_id INTEGER NOT NULL,
+            pve_node TEXT DEFAULT 'pve',
+            status TEXT DEFAULT 'stopped',
+            course_id INTEGER,
+            FOREIGN KEY (course_id) REFERENCES courses (id)
+        )
+    ''')
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_progress (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             course_id INTEGER NOT NULL,
-            status TEXT DEFAULT 'not_started',
-            current_step INTEGER DEFAULT 0,
-            completed_steps TEXT DEFAULT '',
-            started_at TIMESTAMP,
-            completed_at TIMESTAMP,
+            progress_percent INTEGER DEFAULT 0,
+            completed_tasks TEXT,
             last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (course_id) REFERENCES courses(id),
+            FOREIGN KEY (user_id) REFERENCES users (id),
+            FOREIGN KEY (course_id) REFERENCES courses (id),
             UNIQUE(user_id, course_id)
         )
     ''')
     
-    # Terminal sessions table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS terminal_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             course_id INTEGER NOT NULL,
+            session_token TEXT UNIQUE NOT NULL,
             container_id INTEGER,
-            session_token TEXT UNIQUE,
-            status TEXT DEFAULT 'inactive',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            closed_at TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (course_id) REFERENCES courses(id),
-            FOREIGN KEY (container_id) REFERENCES containers(id)
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            status TEXT DEFAULT 'active',
+            FOREIGN KEY (user_id) REFERENCES users (id),
+            FOREIGN KEY (course_id) REFERENCES courses (id),
+            FOREIGN KEY (container_id) REFERENCES containers (id)
         )
     ''')
     
-    db.commit()
-    
-    # Create default admin user if not exists
-    cursor.execute('SELECT * FROM users WHERE username = ?', ('admin',))
+    # Create default admin if not exists
+    cursor.execute("SELECT * FROM users WHERE username = 'admin'")
     if not cursor.fetchone():
-        admin_hash = generate_password_hash('admin123')
         cursor.execute(
-            'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
-            ('admin', admin_hash, 'admin')
+            "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+            ('admin', 'admin123', 'admin')
         )
-        db.commit()
-        print("Default admin user created: username=admin, password=admin123")
+    
+    conn.commit()
+    conn.close()
 
 def login_required(f):
-    """Decorator to require login."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
-            flash('Please log in to access this page.', 'error')
+            flash('Пожалуйста, войдите в систему', 'error')
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
 
 def admin_required(f):
-    """Decorator to require admin role."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            flash('Please log in to access this page.', 'error')
+        if 'user_id' not in session or session.get('role') != 'admin':
+            flash('Доступ запрещён', 'error')
             return redirect(url_for('login'))
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute('SELECT role FROM users WHERE id = ?', (session['user_id'],))
-        user = cursor.fetchone()
-        if not user or user['role'] != 'admin':
-            flash('Access denied. Admin privileges required.', 'error')
-            return redirect(url_for('index'))
         return f(*args, **kwargs)
     return decorated_function
 
-# Routes
+def get_pve_ticket():
+    """Получить тикет аутентификации от Proxmox VE"""
+    url = f"https://{PVE_HOST}:{PVE_PORT}/api2/json/access/ticket"
+    data = {
+        'username': PVE_USER,
+        'password': PVE_PASSWORD
+    }
+    try:
+        response = requests.post(url, data=data, verify=PVE_VERIFY_SSL, timeout=10)
+        if response.status_code == 200:
+            result = response.json()
+            if 'data' in result:
+                return result['data']['ticket'], result['data']['CSRFPreventionToken']
+        else:
+            print(f"PVE auth error: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"PVE connection error: {e}")
+    return None, None
+
+def pve_api_request(method, endpoint, data=None):
+    """Выполнить запрос к Proxmox VE API"""
+    ticket, csrf_token = get_pve_ticket()
+    if not ticket:
+        return None
+    
+    url = f"https://{PVE_HOST}:{PVE_PORT}/api2/json/{endpoint}"
+    headers = {
+        'Cookie': f'PVEAuthCookie={ticket}',
+        'CSRFPreventionToken': csrf_token
+    }
+    
+    try:
+        if method == 'GET':
+            response = requests.get(url, headers=headers, verify=PVE_VERIFY_SSL, timeout=10)
+        elif method == 'POST':
+            response = requests.post(url, headers=headers, json=data, verify=PVE_VERIFY_SSL, timeout=10)
+        elif method == 'PUT':
+            response = requests.put(url, headers=headers, json=data, verify=PVE_VERIFY_SSL, timeout=10)
+        elif method == 'DELETE':
+            response = requests.delete(url, headers=headers, verify=PVE_VERIFY_SSL, timeout=10)
+        
+        if response.status_code in [200, 201]:
+            return response.json()
+        else:
+            print(f"PVE API error: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        print(f"PVE request error: {e}")
+        return None
+
+def start_container(vm_id, node=PVE_NODE):
+    """Запустить LXC контейнер в Proxmox"""
+    endpoint = f"nodes/{node}/lxc/{vm_id}/status/start"
+    result = pve_api_request('POST', endpoint)
+    return result is not None
+
+def stop_container(vm_id, node=PVE_NODE):
+    """Остановить LXC контейнер в Proxmox"""
+    endpoint = f"nodes/{node}/lxc/{vm_id}/status/stop"
+    result = pve_api_request('POST', endpoint)
+    return result is not None
+
+def get_container_status(vm_id, node=PVE_NODE):
+    """Получить статус контейнера"""
+    endpoint = f"nodes/{node}/lxc/{vm_id}/status/current"
+    result = pve_api_request('GET', endpoint)
+    if result and 'data' in result:
+        return result['data'].get('status', 'unknown')
+    return 'unknown'
+
+def get_vnc_proxy_url(vm_id, node=PVE_NODE):
+    """Получить URL для VNC прокси сессии через Proxmox API"""
+    endpoint = f"nodes/{node}/lxc/{vm_id}/proxy/vncwebsocket"
+    data = {
+        'port': 5900,
+        'vncticket': ''
+    }
+    result = pve_api_request('POST', endpoint, data)
+    if result and 'data' in result:
+        return result['data']
+    return None
+
+def get_container_console_ticket(vm_id, node=PVE_NODE):
+    """Получить билет для доступа к консоли контейнера через termius/xterm.js"""
+    endpoint = f"nodes/{node}/lxc/{vm_id}/termproxy"
+    result = pve_api_request('POST', endpoint)
+    if result and 'data' in result:
+        return result['data']
+    return None
+
 @app.route('/')
 def index():
-    """Home page with course list."""
-    db = get_db()
-    cursor = db.cursor()
-    cursor.execute('''
-        SELECT c.*, cont.name as container_name 
-        FROM courses c 
-        LEFT JOIN containers cont ON c.container_id = cont.id
-        ORDER BY c.created_at DESC
-    ''')
-    courses = cursor.fetchall()
-    return render_template('index.html', courses=courses)
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    
+    if session.get('role') == 'admin':
+        return redirect(url_for('admin_dashboard'))
+    return redirect(url_for('student_dashboard'))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    """User login."""
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
+        username = request.form['username']
+        password = request.form['password']
         
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?", (username, password))
         user = cursor.fetchone()
+        conn.close()
         
-        if user and check_password_hash(user['password_hash'], password):
+        if user:
             session['user_id'] = user['id']
             session['username'] = user['username']
             session['role'] = user['role']
-            flash('Login successful!', 'success')
+            flash('Вход выполнен успешно', 'success')
             return redirect(url_for('index'))
         else:
-            flash('Invalid username or password.', 'error')
+            flash('Неверное имя пользователя или пароль', 'error')
     
     return render_template('login.html')
 
 @app.route('/logout')
 def logout():
-    """User logout."""
     session.clear()
-    flash('You have been logged out.', 'success')
-    return redirect(url_for('index'))
+    flash('Вы вышли из системы', 'success')
+    return redirect(url_for('login'))
 
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    """User registration."""
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
-        if not username or not password:
-            flash('Username and password are required.', 'error')
-            return render_template('register.html')
-        
-        password_hash = generate_password_hash(password)
-        
-        try:
-            db = get_db()
-            cursor = db.cursor()
-            cursor.execute(
-                'INSERT INTO users (username, password_hash) VALUES (?, ?)',
-                (username, password_hash)
-            )
-            db.commit()
-            flash('Registration successful! Please log in.', 'success')
-            return redirect(url_for('login'))
-        except sqlite3.IntegrityError:
-            flash('Username already exists.', 'error')
+@app.route('/dashboard')
+@login_required
+def student_dashboard():
+    if session.get('role') == 'admin':
+        return redirect(url_for('admin_dashboard'))
     
-    return render_template('register.html')
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT c.*, 
+               COALESCE(up.progress_percent, 0) as progress,
+               up.last_accessed
+        FROM courses c
+        LEFT JOIN user_progress up ON c.id = up.course_id AND up.user_id = ?
+        ORDER BY c.created_at DESC
+    """, (session['user_id'],))
+    courses = cursor.fetchall()
+    
+    cursor.execute("""
+        SELECT ts.*, c.title as course_title, cont.name as container_name
+        FROM terminal_sessions ts
+        JOIN courses c ON ts.course_id = c.id
+        LEFT JOIN containers cont ON ts.container_id = cont.id
+        WHERE ts.user_id = ? AND ts.status = 'active'
+        ORDER BY ts.started_at DESC
+    """, (session['user_id'],))
+    active_sessions = cursor.fetchall()
+    
+    conn.close()
+    
+    return render_template('student_dashboard.html', courses=courses, active_sessions=active_sessions)
 
 @app.route('/course/<int:course_id>')
 @login_required
 def view_course(course_id):
-    """View a specific course with assignment."""
-    db = get_db()
-    cursor = db.cursor()
+    if session.get('role') == 'admin':
+        return redirect(url_for('admin_dashboard'))
     
-    # Get course details
-    cursor.execute('''
-        SELECT c.*, cont.name as container_name, cont.pve_node, cont.docker_image
-        FROM courses c 
-        LEFT JOIN containers cont ON c.container_id = cont.id
-        WHERE c.id = ?
-    ''', (course_id,))
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM courses WHERE id = ?", (course_id,))
     course = cursor.fetchone()
     
     if not course:
-        flash('Course not found.', 'error')
-        return redirect(url_for('index'))
+        flash('Курс не найден', 'error')
+        return redirect(url_for('student_dashboard'))
     
-    # Get or create user progress
-    cursor.execute('''
+    cursor.execute("""
         SELECT * FROM user_progress 
         WHERE user_id = ? AND course_id = ?
-    ''', (session['user_id'], course_id))
+    """, (session['user_id'], course_id))
     progress = cursor.fetchone()
     
-    if not progress:
-        cursor.execute('''
-            INSERT INTO user_progress (user_id, course_id, status, started_at)
-            VALUES (?, ?, 'in_progress', ?)
-        ''', (session['user_id'], course_id, datetime.now()))
-        db.commit()
-        cursor.execute('''
-            SELECT * FROM user_progress 
-            WHERE user_id = ? AND course_id = ?
-        ''', (session['user_id'], course_id))
-        progress = cursor.fetchone()
-    
-    # Check for active terminal session
-    cursor.execute('''
+    cursor.execute("""
         SELECT * FROM terminal_sessions 
         WHERE user_id = ? AND course_id = ? AND status = 'active'
-        ORDER BY created_at DESC LIMIT 1
-    ''', (session['user_id'], course_id))
+        ORDER BY started_at DESC LIMIT 1
+    """, (session['user_id'], course_id))
     active_session = cursor.fetchone()
     
-    return render_template('course.html', course=course, progress=progress, active_session=active_session)
+    conn.close()
+    
+    progress_percent = progress['progress_percent'] if progress else 0
+    completed_tasks = progress['completed_tasks'] if progress and progress['completed_tasks'] else ''
+    
+    return render_template('course.html', 
+                         course=course, 
+                         progress_percent=progress_percent,
+                         completed_tasks=completed_tasks.split(',') if completed_tasks else [],
+                         active_session=active_session)
 
-@app.route('/course/<int:course_id>/update_progress', methods=['POST'])
-@login_required
-def update_progress(course_id):
-    """Update user progress for a course."""
-    step = request.form.get('step', type=int)
-    completed = request.form.get('completed', 'false') == 'true'
-    
-    db = get_db()
-    cursor = db.cursor()
-    
-    cursor.execute('''
-        SELECT * FROM user_progress 
-        WHERE user_id = ? AND course_id = ?
-    ''', (session['user_id'], course_id))
-    progress = cursor.fetchone()
-    
-    if progress:
-        if completed:
-            cursor.execute('''
-                UPDATE user_progress 
-                SET status = 'completed', completed_at = ?, current_step = ?
-                WHERE user_id = ? AND course_id = ?
-            ''', (datetime.now(), step, session['user_id'], course_id))
-        else:
-            cursor.execute('''
-                UPDATE user_progress 
-                SET current_step = ?, last_accessed = ?
-                WHERE user_id = ? AND course_id = ?
-            ''', (step, datetime.now(), session['user_id'], course_id))
-        db.commit()
-    
-    return jsonify({'success': True})
-
-@app.route('/course/<int:course_id>/request_terminal', methods=['POST'])
+@app.route('/request_terminal/<int:course_id>', methods=['POST'])
 @login_required
 def request_terminal(course_id):
-    """Request a new terminal session for a course."""
-    db = get_db()
-    cursor = db.cursor()
+    conn = get_db()
+    cursor = conn.cursor()
     
-    # Get course container
-    cursor.execute('''
-        SELECT c.container_id, c.id as course_id
-        FROM courses c 
-        WHERE c.id = ?
-    ''', (course_id,))
+    cursor.execute("SELECT * FROM courses WHERE id = ?", (course_id,))
     course = cursor.fetchone()
     
     if not course or not course['container_id']:
-        return jsonify({'error': 'No container configured for this course'}), 400
+        flash('Для этого курса не настроено рабочее место', 'error')
+        conn.close()
+        return redirect(url_for('view_course', course_id=course_id))
     
-    # Generate session token
-    import secrets
-    session_token = secrets.token_urlsafe(32)
+    cursor.execute("SELECT * FROM containers WHERE id = ?", (course['container_id'],))
+    container = cursor.fetchone()
     
-    # Create terminal session
-    cursor.execute('''
-        INSERT INTO terminal_sessions (user_id, course_id, container_id, session_token, status)
-        VALUES (?, ?, ?, ?, 'active')
-    ''', (session['user_id'], course_id, course['container_id'], session_token))
-    db.commit()
+    if not container:
+        flash('Контейнер не найден', 'error')
+        conn.close()
+        return redirect(url_for('view_course', course_id=course_id))
     
-    # In production, this would integrate with PVE API to start container
-    # For now, we just return the session token
-    return jsonify({
-        'success': True,
-        'session_token': session_token,
-        'message': 'Terminal session created. Connecting to container...'
-    })
+    # Запускаем контейнер через Proxmox
+    if start_container(container['pve_vm_id'], container['pve_node']):
+        session_token = str(uuid.uuid4())
+        
+        cursor.execute("""
+            INSERT INTO terminal_sessions (user_id, course_id, session_token, container_id)
+            VALUES (?, ?, ?, ?)
+        """, (session['user_id'], course_id, session_token, container['id']))
+        
+        conn.commit()
+        
+        # Обновляем время последнего доступа
+        cursor.execute("""
+            INSERT OR REPLACE INTO user_progress (user_id, course_id, last_accessed)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+        """, (session['user_id'], course_id))
+        conn.commit()
+        
+        conn.close()
+        flash('Рабочее место запущено!', 'success')
+        return redirect(url_for('terminal', session_token=session_token))
+    else:
+        conn.close()
+        flash('Не удалось запустить рабочее место. Проверьте подключение к Proxmox.', 'error')
+        return redirect(url_for('view_course', course_id=course_id))
 
-@app.route('/course/<int:course_id>/terminal')
+@app.route('/terminal/<session_token>')
 @login_required
-def terminal_view(course_id):
-    """View terminal for a course."""
-    db = get_db()
-    cursor = db.cursor()
+def terminal(session_token):
+    conn = get_db()
+    cursor = conn.cursor()
     
-    cursor.execute('''
-        SELECT c.*, cont.name as container_name
-        FROM courses c 
-        LEFT JOIN containers cont ON c.container_id = cont.id
-        WHERE c.id = ?
-    ''', (course_id,))
-    course = cursor.fetchone()
+    cursor.execute("""
+        SELECT ts.*, c.title as course_title, cont.pve_vm_id, cont.pve_node
+        FROM terminal_sessions ts
+        JOIN courses c ON ts.course_id = c.id
+        JOIN containers cont ON ts.container_id = cont.id
+        WHERE ts.session_token = ? AND ts.user_id = ?
+    """, (session_token, session['user_id']))
     
-    if not course:
-        flash('Course not found.', 'error')
-        return redirect(url_for('index'))
+    session_data = cursor.fetchone()
+    conn.close()
     
-    return render_template('terminal.html', course=course)
+    if not session_data:
+        flash('Сессия не найдена', 'error')
+        return redirect(url_for('student_dashboard'))
+    
+    # Получаем билет для доступа к консоли через Proxmox
+    console_ticket = get_container_console_ticket(session_data['pve_vm_id'], session_data['pve_node'])
+    
+    return render_template('terminal.html', 
+                         session_data=session_data, 
+                         PVE_HOST=PVE_HOST, 
+                         PVE_PORT=PVE_PORT,
+                         console_ticket=console_ticket)
 
-@app.route('/course/<int:course_id>/close_terminal', methods=['POST'])
+@app.route('/api/terminal/<session_token>/exec', methods=['POST'])
 @login_required
-def close_terminal(course_id):
-    """Close terminal session."""
-    db = get_db()
-    cursor = db.cursor()
+def terminal_exec(session_token):
+    """API endpoint для выполнения команд в терминале через Proxmox"""
+    data = request.get_json()
+    command = data.get('command', '')
     
-    cursor.execute('''
-        UPDATE terminal_sessions 
-        SET status = 'closed', closed_at = ?
-        WHERE user_id = ? AND course_id = ? AND status = 'active'
-    ''', (datetime.now(), session['user_id'], course_id))
-    db.commit()
+    conn = get_db()
+    cursor = conn.cursor()
     
-    return jsonify({'success': True})
+    cursor.execute("""
+        SELECT ts.*, cont.pve_vm_id, cont.pve_node
+        FROM terminal_sessions ts
+        JOIN containers cont ON ts.container_id = cont.id
+        WHERE ts.session_token = ? AND ts.user_id = ?
+    """, (session_token, session['user_id']))
+    
+    session_data = cursor.fetchone()
+    conn.close()
+    
+    if not session_data:
+        return jsonify({'error': 'Session not found'}), 404
+    
+    # Выполняем команду через Proxmox API
+    endpoint = f"nodes/{session_data['pve_node']}/lxc/{session_data['pve_vm_id']}/exec"
+    exec_data = {
+        'command': command,
+        'node': session_data['pve_node']
+    }
+    result = pve_api_request('POST', endpoint, exec_data)
+    
+    if result and 'data' in result:
+        return jsonify({'output': result['data']})
+    else:
+        return jsonify({'error': 'Failed to execute command'}), 500
+
+@app.route('/update_progress/<int:course_id>', methods=['POST'])
+@login_required
+def update_progress(course_id):
+    data = request.get_json()
+    task_id = data.get('task_id')
+    completed = data.get('completed', False)
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT completed_tasks FROM user_progress 
+        WHERE user_id = ? AND course_id = ?
+    """, (session['user_id'], course_id))
+    
+    progress = cursor.fetchone()
+    
+    if progress and progress['completed_tasks']:
+        tasks = progress['completed_tasks'].split(',')
+    else:
+        tasks = []
+    
+    if completed and task_id not in tasks:
+        tasks.append(task_id)
+    elif not completed and task_id in tasks:
+        tasks.remove(task_id)
+    
+    progress_percent = len(tasks) * 25  # Предполагаем 4 задачи на курс
+    
+    cursor.execute("""
+        INSERT OR REPLACE INTO user_progress (user_id, course_id, completed_tasks, progress_percent, last_accessed)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, (session['user_id'], course_id, ','.join(tasks), min(progress_percent, 100)))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'success': True, 'progress': min(progress_percent, 100)})
 
 # Admin routes
 @app.route('/admin')
 @admin_required
 def admin_dashboard():
-    """Admin dashboard."""
-    db = get_db()
-    cursor = db.cursor()
+    conn = get_db()
+    cursor = conn.cursor()
     
-    # Get statistics
-    cursor.execute('SELECT COUNT(*) as total_users FROM users WHERE role = "student"')
-    total_students = cursor.fetchone()['total_users']
+    cursor.execute("SELECT * FROM users ORDER BY created_at DESC")
+    users = cursor.fetchall()
     
-    cursor.execute('SELECT COUNT(*) as total_courses FROM courses')
-    total_courses = cursor.fetchone()['total_courses']
+    cursor.execute("SELECT * FROM courses ORDER BY created_at DESC")
+    courses = cursor.fetchall()
     
-    cursor.execute('SELECT COUNT(*) as total_containers FROM containers')
-    total_containers = cursor.fetchone()['total_containers']
+    cursor.execute("SELECT * FROM containers ORDER BY id DESC")
+    containers = cursor.fetchall()
     
-    cursor.execute('''
-        SELECT u.username, c.title, up.status, up.last_accessed
+    cursor.execute("""
+        SELECT up.*, u.username, c.title as course_title
         FROM user_progress up
         JOIN users u ON up.user_id = u.id
         JOIN courses c ON up.course_id = c.id
         ORDER BY up.last_accessed DESC
-        LIMIT 10
-    ''')
-    recent_activity = cursor.fetchall()
+    """)
+    progress_data = cursor.fetchall()
     
-    return render_template('admin/dashboard.html',
-                         total_students=total_students,
-                         total_courses=total_courses,
-                         total_containers=total_containers,
-                         recent_activity=recent_activity)
+    conn.close()
+    
+    return render_template('admin_dashboard.html', 
+                         users=users, 
+                         courses=courses, 
+                         containers=containers,
+                         progress_data=progress_data)
 
-@app.route('/admin/courses')
+@app.route('/admin/create_user', methods=['POST'])
 @admin_required
-def admin_courses():
-    """Manage courses."""
-    db = get_db()
-    cursor = db.cursor()
+def create_user():
+    username = request.form['username']
+    password = request.form['password']
+    role = request.form.get('role', 'student')
     
-    cursor.execute('''
-        SELECT c.*, cont.name as container_name
-        FROM courses c
-        LEFT JOIN containers cont ON c.container_id = cont.id
-        ORDER BY c.created_at DESC
-    ''')
-    courses = cursor.fetchall()
+    conn = get_db()
+    cursor = conn.cursor()
     
-    return render_template('admin/courses.html', courses=courses)
+    try:
+        cursor.execute(
+            "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+            (username, password, role)
+        )
+        conn.commit()
+        flash(f'Пользователь {username} создан', 'success')
+    except sqlite3.IntegrityError:
+        flash(f'Пользователь {username} уже существует', 'error')
+    
+    conn.close()
+    return redirect(url_for('admin_dashboard'))
 
-@app.route('/admin/courses/create', methods=['GET', 'POST'])
+@app.route('/admin/create_course', methods=['POST'])
 @admin_required
-def admin_create_course():
-    """Create a new course."""
-    db = get_db()
-    cursor = db.cursor()
+def create_course():
+    title = request.form['title']
+    description = request.form['description']
+    content = request.form['content']
+    container_id = request.form.get('container_id')
     
-    if request.method == 'POST':
-        title = request.form.get('title')
-        description = request.form.get('description')
-        content = request.form.get('content')
-        container_id = request.form.get('container_id', type=int)
-        
-        image_path = None
-        if 'image' in request.files:
-            file = request.files['image']
-            if file.filename:
-                filename = secure_filename(file.filename)
-                os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                file.save(filepath)
-                image_path = filepath
-        
-        cursor.execute('''
-            INSERT INTO courses (title, description, content, container_id, image_path)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (title, description, content, container_id, image_path))
-        db.commit()
-        
-        flash('Course created successfully!', 'success')
-        return redirect(url_for('admin_courses'))
+    image_path = None
+    if 'image' in request.files:
+        file = request.files['image']
+        if file and file.filename != '' and allowed_file(file.filename):
+            filename = secure_filename(f"{uuid.uuid4()}_{file.filename}")
+            os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+            image_path = f'/uploads/{filename}'
     
-    # Get available containers
-    cursor.execute('SELECT id, name FROM containers')
-    containers = cursor.fetchall()
+    conn = get_db()
+    cursor = conn.cursor()
     
-    return render_template('admin/create_course.html', containers=containers)
+    cursor.execute("""
+        INSERT INTO courses (title, description, content, image_path, container_id)
+        VALUES (?, ?, ?, ?, ?)
+    """, (title, description, content, image_path, container_id if container_id else None))
+    
+    conn.commit()
+    conn.close()
+    
+    flash(f'Курс "{title}" создан', 'success')
+    return redirect(url_for('admin_dashboard'))
 
-@app.route('/admin/courses/<int:course_id>/edit', methods=['GET', 'POST'])
+@app.route('/admin/create_container', methods=['POST'])
 @admin_required
-def admin_edit_course(course_id):
-    """Edit an existing course."""
-    db = get_db()
-    cursor = db.cursor()
+def create_container():
+    name = request.form['name']
+    pve_vm_id = request.form['pve_vm_id']
+    pve_node = request.form.get('pve_node', 'pve')
     
-    cursor.execute('SELECT * FROM courses WHERE id = ?', (course_id,))
-    course = cursor.fetchone()
+    conn = get_db()
+    cursor = conn.cursor()
     
-    if not course:
-        flash('Course not found.', 'error')
-        return redirect(url_for('admin_courses'))
+    # Проверяем статус контейнера в Proxmox
+    status = get_container_status(pve_vm_id, pve_node)
     
-    if request.method == 'POST':
-        title = request.form.get('title')
-        description = request.form.get('description')
-        content = request.form.get('content')
-        container_id = request.form.get('container_id', type=int)
-        
-        image_path = course['image_path']
-        if 'image' in request.files:
-            file = request.files['image']
-            if file.filename:
-                filename = secure_filename(file.filename)
-                os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                file.save(filepath)
-                image_path = filepath
-        
-        cursor.execute('''
-            UPDATE courses 
-            SET title = ?, description = ?, content = ?, container_id = ?, image_path = ?
-            WHERE id = ?
-        ''', (title, description, content, container_id, image_path, course_id))
-        db.commit()
-        
-        flash('Course updated successfully!', 'success')
-        return redirect(url_for('admin_courses'))
+    cursor.execute("""
+        INSERT INTO containers (name, pve_vm_id, pve_node, status)
+        VALUES (?, ?, ?, ?)
+    """, (name, pve_vm_id, pve_node, status))
     
-    cursor.execute('SELECT id, name FROM containers')
-    containers = cursor.fetchall()
+    conn.commit()
+    conn.close()
     
-    return render_template('admin/edit_course.html', course=course, containers=containers)
+    flash(f'Контейнер "{name}" добавлен', 'success')
+    return redirect(url_for('admin_dashboard'))
 
-@app.route('/admin/courses/<int:course_id>/delete', methods=['POST'])
+@app.route('/admin/delete_user/<int:user_id>', methods=['POST'])
 @admin_required
-def admin_delete_course(course_id):
-    """Delete a course."""
-    db = get_db()
-    cursor = db.cursor()
+def delete_user(user_id):
+    if user_id == session['user_id']:
+        flash('Нельзя удалить самого себя', 'error')
+        return redirect(url_for('admin_dashboard'))
     
-    cursor.execute('DELETE FROM courses WHERE id = ?', (course_id,))
-    db.commit()
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
     
-    flash('Course deleted successfully!', 'success')
-    return redirect(url_for('admin_courses'))
+    flash('Пользователь удалён', 'success')
+    return redirect(url_for('admin_dashboard'))
 
-@app.route('/admin/containers')
+@app.route('/admin/delete_course/<int:course_id>', methods=['POST'])
 @admin_required
-def admin_containers():
-    """Manage PVE containers."""
-    db = get_db()
-    cursor = db.cursor()
+def delete_course(course_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM courses WHERE id = ?", (course_id,))
+    conn.commit()
+    conn.close()
     
-    cursor.execute('SELECT * FROM containers ORDER BY created_at DESC')
-    containers = cursor.fetchall()
-    
-    return render_template('admin/containers.html', containers=containers)
+    flash('Курс удалён', 'success')
+    return redirect(url_for('admin_dashboard'))
 
-@app.route('/admin/containers/create', methods=['GET', 'POST'])
+@app.route('/admin/delete_container/<int:container_id>', methods=['POST'])
 @admin_required
-def admin_create_container():
-    """Create a new PVE container template."""
-    if request.method == 'POST':
-        name = request.form.get('name')
-        description = request.form.get('description')
-        pve_node = request.form.get('pve_node')
-        pve_container_id = request.form.get('pve_container_id')
-        docker_image = request.form.get('docker_image')
-        
-        db = get_db()
-        cursor = db.cursor()
-        
-        try:
-            cursor.execute('''
-                INSERT INTO containers (name, description, pve_node, pve_container_id, docker_image)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (name, description, pve_node, pve_container_id, docker_image))
-            db.commit()
-            
-            flash('Container created successfully!', 'success')
-            return redirect(url_for('admin_containers'))
-        except sqlite3.IntegrityError:
-            flash('Container name already exists.', 'error')
+def delete_container(container_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM containers WHERE id = ?", (container_id,))
+    conn.commit()
+    conn.close()
     
-    return render_template('admin/create_container.html')
+    flash('Контейнер удалён', 'success')
+    return redirect(url_for('admin_dashboard'))
 
-@app.route('/admin/containers/<int:container_id>/delete', methods=['POST'])
-@admin_required
-def admin_delete_container(container_id):
-    """Delete a container."""
-    db = get_db()
-    cursor = db.cursor()
-    
-    cursor.execute('DELETE FROM containers WHERE id = ?', (container_id,))
-    db.commit()
-    
-    flash('Container deleted successfully!', 'success')
-    return redirect(url_for('admin_containers'))
+@app.route('/uploads/<filename>')
+def uploaded_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
-@app.route('/admin/users')
-@admin_required
-def admin_users():
-    """View all users and their progress."""
-    db = get_db()
-    cursor = db.cursor()
-    
-    cursor.execute('''
-        SELECT u.id, u.username, u.role, u.created_at,
-               COUNT(DISTINCT up.course_id) as courses_enrolled,
-               SUM(CASE WHEN up.status = 'completed' THEN 1 ELSE 0 END) as courses_completed
-        FROM users u
-        LEFT JOIN user_progress up ON u.id = up.user_id
-        WHERE u.role = 'student'
-        GROUP BY u.id
-        ORDER BY u.created_at DESC
-    ''')
-    users = cursor.fetchall()
-    
-    return render_template('admin/users.html', users=users)
+# WebSocket обработчики для работы с терминалом Proxmox
+@socketio.on('connect')
+def handle_connect():
+    print(f'Клиент подключился: {request.sid}')
 
-@app.route('/admin/user/<int:user_id>/progress')
-@admin_required
-def admin_user_progress(user_id):
-    """View detailed progress for a specific user."""
-    db = get_db()
-    cursor = db.cursor()
+@socketio.on('disconnect')
+def handle_disconnect():
+    print(f'Клиент отключился: {request.sid}')
+
+@socketio.on('terminal_input')
+def handle_terminal_input(data):
+    """Обработка ввода команд в терминале через WebSocket"""
+    session_token = data.get('session_token')
+    command = data.get('command')
     
-    cursor.execute('SELECT username FROM users WHERE id = ?', (user_id,))
-    user = cursor.fetchone()
+    if not session_token or not command:
+        emit('terminal_output', {'error': 'Invalid data'})
+        return
     
-    if not user:
-        flash('User not found.', 'error')
-        return redirect(url_for('admin_users'))
+    conn = get_db()
+    cursor = conn.cursor()
     
-    cursor.execute('''
-        SELECT c.title, up.status, up.current_step, up.started_at, up.completed_at, up.last_accessed
-        FROM user_progress up
-        JOIN courses c ON up.course_id = c.id
-        WHERE up.user_id = ?
-        ORDER BY up.last_accessed DESC
-    ''', (user_id,))
-    progress = cursor.fetchall()
+    cursor.execute("""
+        SELECT ts.*, cont.pve_vm_id, cont.pve_node
+        FROM terminal_sessions ts
+        JOIN containers cont ON ts.container_id = cont.id
+        WHERE ts.session_token = ? AND ts.user_id = ?
+    """, (session_token, session.get('user_id')))
     
-    return render_template('admin/user_progress.html', user=user, progress=progress)
+    session_data = cursor.fetchone()
+    conn.close()
+    
+    if not session_data:
+        emit('terminal_output', {'error': 'Session not found'})
+        return
+    
+    # Выполняем команду через Proxmox API
+    endpoint = f"nodes/{session_data['pve_node']}/lxc/{session_data['pve_vm_id']}/exec"
+    exec_data = {
+        'command': ['/bin/bash', '-c', command],
+        'node': session_data['pve_node']
+    }
+    result = pve_api_request('POST', endpoint, exec_data)
+    
+    if result and 'data' in result:
+        output = result['data'].get('outData', '')
+        if output:
+            # Декодируем base64 вывод
+            try:
+                decoded_output = base64.b64decode(output).decode('utf-8', errors='replace')
+                emit('terminal_output', {'output': decoded_output})
+            except:
+                emit('terminal_output', {'output': str(result['data'])})
+        else:
+            emit('terminal_output', {'output': ''})
+    else:
+        emit('terminal_output', {'error': 'Failed to execute command'})
+
+@socketio.on('terminal_resize')
+def handle_terminal_resize(data):
+    """Обработка изменения размера терминала"""
+    session_token = data.get('session_token')
+    cols = data.get('cols', 80)
+    rows = data.get('rows', 24)
+    
+    if not session_token:
+        return
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT ts.*, cont.pve_vm_id, cont.pve_node
+        FROM terminal_sessions ts
+        JOIN containers cont ON ts.container_id = cont.id
+        WHERE ts.session_token = ?
+    """, (session_token,))
+    
+    session_data = cursor.fetchone()
+    conn.close()
+    
+    if session_data:
+        # Отправляем команду resize в контейнер
+        endpoint = f"nodes/{session_data['pve_node']}/lxc/{session_data['pve_vm_id']}/exec"
+        exec_data = {
+            'command': ['stty', 'cols', str(cols), 'rows', str(rows)]
+        }
+        pve_api_request('POST', endpoint, exec_data)
 
 if __name__ == '__main__':
-    # Initialize database
-    with app.app_context():
-        init_db()
-    
-    # Run the application
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    init_db()
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)

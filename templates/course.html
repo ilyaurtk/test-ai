@@ -1,215 +1,116 @@
-{% extends "base.html" %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ course.title }} - IT Courses</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">IT COURSES</div>
+        <div class="nav-user">
+            <span>{{ session.username }}</span>
+            <a href="{{ url_for('student_dashboard') }}" class="btn btn-small">Назад</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-small">Выход</a>
+        </div>
+    </nav>
 
-{% block title %}{{ course.title }} - IT Course Platform{% endblock %}
+    <div class="course-layout">
+        <div class="task-panel">
+            <h1>{{ course.title }}</h1>
+            
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
 
-{% block extra_css %}
-<style>
-    .course-page-layout {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 2rem;
-        min-height: calc(100vh - 150px);
-    }
-    
-    @media (max-width: 768px) {
-        .course-page-layout {
-            grid-template-columns: 1fr;
-        }
-    }
-</style>
-{% endblock %}
-
-{% block content %}
-<div class="course-page-layout">
-    <!-- Left Panel: Assignment -->
-    <div class="assignment-panel">
-        <h2 style="color: var(--primary-green); margin-bottom: 1rem;">{{ course.title }}</h2>
-        
-        {% if course.image_path %}
-            <img src="{{ url_for('static', filename=course.image_path) }}" alt="{{ course.title }}" class="course-image">
-        {% endif %}
-        
-        <div class="progress-container">
-            <div class="progress-bar">
-                <div class="progress-fill" style="width: {{ (progress.current_step / 10) * 100 }}%;"></div>
+            <div class="progress-section">
+                <h3>Прогресс: {{ progress_percent }}%</h3>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {{ progress_percent }}%"></div>
+                </div>
             </div>
-            <div class="progress-text">
-                Прогресс: {{ progress.current_step }}/10 шагов
-                {% if progress.status == 'completed' %}
-                    <span class="badge badge-success" style="margin-left: 0.5rem;">Завершено</span>
+
+            <div class="course-content">
+                <h2>Задание</h2>
+                <div class="content-text">{{ course.content }}</div>
+            </div>
+
+            <div class="tasks-section">
+                <h2>Выполненные задачи</h2>
+                <div class="task-list">
+                    <label class="task-item">
+                        <input type="checkbox" class="task-checkbox" data-task="1" {% if '1' in completed_tasks %}checked{% endif %}>
+                        <span>Задача 1: Изучить теорию</span>
+                    </label>
+                    <label class="task-item">
+                        <input type="checkbox" class="task-checkbox" data-task="2" {% if '2' in completed_tasks %}checked{% endif %}>
+                        <span>Задача 2: Выполнить упражнение</span>
+                    </label>
+                    <label class="task-item">
+                        <input type="checkbox" class="task-checkbox" data-task="3" {% if '3' in completed_tasks %}checked{% endif %}>
+                        <span>Задача 3: Практическая работа</span>
+                    </label>
+                    <label class="task-item">
+                        <input type="checkbox" class="task-checkbox" data-task="4" {% if '4' in completed_tasks %}checked{% endif %}>
+                        <span>Задача 4: Итоговый тест</span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <div class="terminal-panel">
+            <div class="terminal-header">
+                <h2>Рабочее место</h2>
+                {% if active_session %}
+                <a href="{{ url_for('terminal', session_token=active_session.session_token) }}" class="btn btn-primary">Открыть терминал</a>
+                {% else %}
+                <form action="{{ url_for('request_terminal', course_id=course.id) }}" method="POST">
+                    <button type="submit" class="btn btn-primary btn-large">
+                        <span class="icon">⚡</span> Запросить рабочее место
+                    </button>
+                </form>
+                {% endif %}
+            </div>
+            
+            <div class="terminal-info">
+                <h3>Информация о контейнере</h3>
+                {% if course.container_id %}
+                <p>Для этого курса настроен изолированный контейнер Proxmox VE.</p>
+                <p>Нажмите «Запросить рабочее место» для запуска вашей персональной среды.</p>
+                {% else %}
+                <p class="warning">Для этого курса не настроено рабочее место.</p>
                 {% endif %}
             </div>
         </div>
-        
-        <div style="margin: 1.5rem 0;">
-            <h3 style="color: var(--primary-green); margin-bottom: 1rem;">Задание</h3>
-            <div style="line-height: 1.8;">
-                {{ course.content | safe or 'Описание задания отсутствует' }}
-            </div>
-        </div>
-        
-        {% if course.container_name %}
-        <div class="card" style="background-color: var(--bg-darker); border-color: var(--primary-green);">
-            <h4 style="color: var(--primary-green); margin-bottom: 0.5rem;">Рабочее окружение</h4>
-            <p style="color: var(--text-secondary); font-size: 0.9rem;">
-                Контейнер: {{ course.container_name }}<br>
-                {% if course.pve_node %}PVE Node: {{ course.pve_node }}{% endif %}
-            </p>
-        </div>
-        {% endif %}
-        
-        <div style="margin-top: 2rem;">
-            <h4 style="margin-bottom: 1rem; color: var(--primary-green);">Отметить прогресс</h4>
-            <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-                <button class="btn" onclick="updateProgress(false)">Шаг выполнен</button>
-                <button class="btn btn-primary" onclick="updateProgress(true)">Завершить курс</button>
-            </div>
-        </div>
     </div>
-    
-    <!-- Right Panel: Terminal -->
-    <div class="terminal-panel">
-        <div class="card-header">
-            <h3 style="color: var(--primary-green);">Терминал</h3>
-            {% if active_session %}
-                <button class="btn btn-danger" onclick="closeTerminal()">Закрыть терминал</button>
-            {% endif %}
-        </div>
-        
-        {% if active_session %}
-            <div id="terminal-container" class="terminal-active">
-                <div style="margin-bottom: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
-                    <span style="color: var(--text-secondary);">Подключено к: {{ course.container_name or 'Container' }}</span>
-                    <span style="float: right;" class="badge badge-success">Активно</span>
-                </div>
-                <div id="terminal-content" style="font-family: 'Courier New', monospace;">
-                    <div>$ Connecting to container...</div>
-                    <div>$ Connection established.</div>
-                    <div>$ Welcome to IT Course Platform Terminal</div>
-                    <div>$ Type your commands below:</div>
-                    <div><br></div>
-                    <div id="command-input-line">
-                        <span>$ </span>
-                        <input type="text" id="command-input" style="background: transparent; border: none; color: var(--primary-green); font-family: inherit; font-size: inherit; width: calc(100% - 30px); outline: none;" placeholder="Введите команду...">
-                    </div>
-                </div>
-            </div>
-        {% else %}
-            <div id="terminal-placeholder" class="terminal-placeholder">
-                <div style="font-size: 3rem; margin-bottom: 1rem;">⌨️</div>
-                <h3 style="color: var(--primary-green); margin-bottom: 1rem;">Терминал не активен</h3>
-                <p style="color: var(--text-secondary); margin-bottom: 2rem;">
-                    Нажмите кнопку ниже, чтобы запросить рабочее место и получить доступ к терминалу
-                </p>
-                <button class="btn btn-primary" onclick="requestTerminal()" id="request-btn">
-                    🚀 Запросить рабочее место
-                </button>
-            </div>
-        {% endif %}
-    </div>
-</div>
-{% endblock %}
 
-{% block extra_js %}
-<script>
-const courseId = {{ course.id }};
-
-function updateProgress(completed) {
-    const currentStep = {{ progress.current_step }};
-    const newStep = completed ? 10 : Math.min(currentStep + 1, 10);
-    
-    fetch(`/course/${courseId}/update_progress`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: `step=${newStep}&completed=${completed}`
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            location.reload();
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        alert('Ошибка при обновлении прогресса');
-    });
-}
-
-function requestTerminal() {
-    const btn = document.getElementById('request-btn');
-    btn.disabled = true;
-    btn.textContent = '⏳ Подключение...';
-    
-    fetch(`/course/${courseId}/request_terminal`, {
-        method: 'POST'
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            location.reload();
-        } else {
-            alert('Ошибка: ' + data.error);
-            btn.disabled = false;
-            btn.textContent = '🚀 Запросить рабочее место';
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        alert('Ошибка при подключении к терминалу');
-        btn.disabled = false;
-        btn.textContent = '🚀 Запросить рабочее место';
-    });
-}
-
-function closeTerminal() {
-    fetch(`/course/${courseId}/close_terminal`, {
-        method: 'POST'
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            location.reload();
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-    });
-}
-
-// Simple terminal input handling
-document.addEventListener('DOMContentLoaded', function() {
-    const commandInput = document.getElementById('command-input');
-    if (commandInput) {
-        commandInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                const command = commandInput.value;
-                if (command.trim()) {
-                    const terminalContent = document.getElementById('terminal-content');
-                    const commandLine = document.getElementById('command-input-line');
-                    
-                    // Add executed command to history
-                    const executedDiv = document.createElement('div');
-                    executedDiv.innerHTML = `<span>$ </span>${command}`;
-                    terminalContent.insertBefore(executedDiv, commandLine);
-                    
-                    // Add simulated response
-                    const responseDiv = document.createElement('div');
-                    responseDiv.style.color = 'var(--text-secondary)';
-                    responseDiv.textContent = `Command executed: ${command}`;
-                    terminalContent.insertBefore(responseDiv, commandLine);
-                    
-                    // Clear input
-                    commandInput.value = '';
-                    
-                    // Scroll to bottom
-                    const terminalContainer = document.getElementById('terminal-container');
-                    terminalContainer.scrollTop = terminalContainer.scrollHeight;
-                }
-            }
+    <script>
+        document.querySelectorAll('.task-checkbox').forEach(checkbox => {
+            checkbox.addEventListener('change', function() {
+                const taskId = this.dataset.task;
+                const completed = this.checked;
+                
+                fetch('{{ url_for("update_progress", course_id=course.id) }}', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ task_id: taskId, completed: completed })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.querySelector('.progress-fill').style.width = data.progress + '%';
+                        document.querySelector('.progress-section h3').textContent = 'Прогресс: ' + data.progress + '%';
+                    }
+                });
+            });
         });
-    }
-});
-</script>
-{% endblock %}
+    </script>
+</body>
+</html>

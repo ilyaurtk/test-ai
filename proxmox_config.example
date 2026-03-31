@@ -1,0 +1,47 @@
+# Конфигурация Proxmox VE для IT Courses Platform
+# Скопируйте этот файл в /etc/proxmox_ve_config.env и отредактируйте значения
+
+# Адрес сервера Proxmox VE (IP или домен)
+PVE_HOST=192.168.1.100
+
+# Порт Proxmox VE API (по умолчанию 8006)
+PVE_PORT=8006
+
+# Пользователь Proxmox (рекомендуется создать отдельного пользователя с ограниченными правами)
+# Формат: username@realm (например, root@pam или itcourses@pve)
+PVE_USER=itcourses@pve
+
+# Пароль пользователя Proxmox
+PVE_PASSWORD=your_secure_password
+
+# Имя ноды Proxmox (по умолчанию 'pve')
+PVE_NODE=pve
+
+# Проверка SSL сертификата (true/false)
+# Для самоподписанных сертификатов используйте false
+PVE_VERIFY_SSL=false
+
+# Пример создания пользователя в Proxmox:
+# 1. Создайте роль с необходимыми правами:
+#    pveum role add ITCourses -privs "VM.Allocate VM.Audit VM.Config.Disk VM.Config.Network VM.Monitor VM.PowerMgmt SDN.Use"
+#
+# 2. Создайте пользователя:
+#    pveum user add itcourses@pve --password your_password
+#
+# 3. Назначьте роль пользователю на нужном уровне:
+#    pveum aclmod / -user itcourses@pve -role ITCourses
+#
+# Или используйте root@pam (не рекомендуется для продакшена):
+# PVE_USER=root@pam
+# PVE_PASSWORD=your_root_password
+
+# Переменные окружения для запуска приложения:
+# export PVE_HOST=192.168.1.100
+# export PVE_PORT=8006
+# export PVE_USER=itcourses@pve
+# export PVE_PASSWORD=your_secure_password
+# export PVE_NODE=pve
+# export PVE_VERIFY_SSL=false
+
+# Затем запустите приложение:
+# python app.py

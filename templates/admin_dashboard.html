@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IT Courses - Панель администратора</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">IT COURSES - ADMIN</div>
+        <div class="nav-user">
+            <span>{{ session.username }}</span>
+            <a href="{{ url_for('logout') }}" class="btn btn-small">Выход</a>
+        </div>
+    </nav>
+
+    <div class="container admin-container">
+        <h1>Панель администратора</h1>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="admin-tabs">
+            <button class="tab-btn active" onclick="showTab('users')">Пользователи</button>
+            <button class="tab-btn" onclick="showTab('courses')">Курсы</button>
+            <button class="tab-btn" onclick="showTab('containers')">Контейнеры</button>
+            <button class="tab-btn" onclick="showTab('progress')">Прогресс</button>
+        </div>
+
+        <!-- Users Tab -->
+        <div id="users-tab" class="tab-content active">
+            <h2>Управление пользователями</h2>
+            
+            <div class="form-card">
+                <h3>Создать пользователя</h3>
+                <form action="{{ url_for('create_user') }}" method="POST" class="inline-form">
+                    <input type="text" name="username" placeholder="Имя пользователя" required>
+                    <input type="password" name="password" placeholder="Пароль" required>
+                    <select name="role">
+                        <option value="student">Студент</option>
+                        <option value="admin">Администратор</option>
+                    </select>
+                    <button type="submit" class="btn btn-primary">Создать</button>
+                </form>
+            </div>
+
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Имя</th>
+                        <th>Роль</th>
+                        <th>Создан</th>
+                        <th>Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr>
+                        <td>{{ user.id }}</td>
+                        <td>{{ user.username }}</td>
+                        <td>{{ user.role }}</td>
+                        <td>{{ user.created_at }}</td>
+                        <td>
+                            {% if user.id != session.user_id %}
+                            <form action="{{ url_for('delete_user', user_id=user.id) }}" method="POST" style="display:inline;">
+                                <button type="submit" class="btn btn-danger btn-small" onclick="return confirm('Удалить пользователя?')">Удалить</button>
+                            </form>
+                            {% else %}
+                            <span class="text-muted">(Вы)</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Courses Tab -->
+        <div id="courses-tab" class="tab-content">
+            <h2>Управление курсами</h2>
+            
+            <div class="form-card">
+                <h3>Создать курс</h3>
+                <form action="{{ url_for('create_course') }}" method="POST" enctype="multipart/form-data">
+                    <div class="form-group">
+                        <label>Название курса</label>
+                        <input type="text" name="title" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Описание</label>
+                        <textarea name="description" rows="2"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Содержание задания</label>
+                        <textarea name="content" rows="6" required></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Изображение курса</label>
+                        <input type="file" name="image" accept="image/*">
+                    </div>
+                    <div class="form-group">
+                        <label>Контейнер</label>
+                        <select name="container_id">
+                            <option value="">Не выбрано</option>
+                            {% for container in containers %}
+                            <option value="{{ container.id }}">{{ container.name }} (VM {{ container.pve_vm_id }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Создать курс</button>
+                </form>
+            </div>
+
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Название</th>
+                        <th>Описание</th>
+                        <th>Контейнер</th>
+                        <th>Изображение</th>
+                        <th>Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for course in courses %}
+                    <tr>
+                        <td>{{ course.id }}</td>
+                        <td>{{ course.title }}</td>
+                        <td>{{ course.description[:50] }}...</td>
+                        <td>{{ course.container_id or 'Нет' }}</td>
+                        <td>{% if course.image_path %}✓{% else %}-{% endif %}</td>
+                        <td>
+                            <form action="{{ url_for('delete_course', course_id=course.id) }}" method="POST" style="display:inline;">
+                                <button type="submit" class="btn btn-danger btn-small" onclick="return confirm('Удалить курс?')">Удалить</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Containers Tab -->
+        <div id="containers-tab" class="tab-content">
+            <h2>Управление контейнерами Proxmox</h2>
+            
+            <div class="form-card">
+                <h3>Добавить контейнер</h3>
+                <form action="{{ url_for('create_container') }}" method="POST" class="inline-form">
+                    <input type="text" name="name" placeholder="Название контейнера" required>
+                    <input type="number" name="pve_vm_id" placeholder="VM ID в Proxmox" required>
+                    <input type="text" name="pve_node" placeholder="Node (по умолчанию: pve)" value="pve">
+                    <button type="submit" class="btn btn-primary">Добавить</button>
+                </form>
+            </div>
+
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Название</th>
+                        <th>VM ID</th>
+                        <th>Node</th>
+                        <th>Статус</th>
+                        <th>Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for container in containers %}
+                    <tr>
+                        <td>{{ container.id }}</td>
+                        <td>{{ container.name }}</td>
+                        <td>{{ container.pve_vm_id }}</td>
+                        <td>{{ container.pve_node }}</td>
+                        <td>
+                            <span class="status-badge status-{{ container.status }}">
+                                {{ container.status }}
+                            </span>
+                        </td>
+                        <td>
+                            <form action="{{ url_for('delete_container', container_id=container.id) }}" method="POST" style="display:inline;">
+                                <button type="submit" class="btn btn-danger btn-small" onclick="return confirm('Удалить контейнер?')">Удалить</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Progress Tab -->
+        <div id="progress-tab" class="tab-content">
+            <h2>Прогресс пользователей</h2>
+            
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Пользователь</th>
+                        <th>Курс</th>
+                        <th>Прогресс</th>
+                        <th>Завершённые задачи</th>
+                        <th>Последний доступ</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for record in progress_data %}
+                    <tr>
+                        <td>{{ record.username }}</td>
+                        <td>{{ record.course_title }}</td>
+                        <td>
+                            <div class="progress-bar small">
+                                <div class="progress-fill" style="width: {{ record.progress_percent }}%"></div>
+                                <span class="progress-text">{{ record.progress_percent }}%</span>
+                            </div>
+                        </td>
+                        <td>{{ record.completed_tasks or '-' }}</td>
+                        <td>{{ record.last_accessed }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            document.getElementById(tabName + '-tab').classList.add('active');
+            event.target.classList.add('active');
+        }
+    </script>
+</body>
+</html>
