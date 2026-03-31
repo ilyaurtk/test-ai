@@ -27,14 +27,69 @@
         {% endwith %}
 
         <div class="admin-tabs">
-            <button class="tab-btn active" onclick="showTab('users')">Пользователи</button>
+            <button class="tab-btn active" onclick="showTab('pve')">Proxmox VE</button>
+            <button class="tab-btn" onclick="showTab('users')">Пользователи</button>
             <button class="tab-btn" onclick="showTab('courses')">Курсы</button>
             <button class="tab-btn" onclick="showTab('containers')">Контейнеры</button>
             <button class="tab-btn" onclick="showTab('progress')">Прогресс</button>
         </div>
 
+        <!-- Proxmox VE Settings Tab -->
+        <div id="pve-tab" class="tab-content active">
+            <h2>Настройки подключения к Proxmox VE</h2>
+            
+            <div class="form-card">
+                <h3>Подключение к серверу Proxmox</h3>
+                <form action="{{ url_for('save_pve_config') }}" method="POST">
+                    <div class="form-group">
+                        <label>Хост Proxmox (IP или домен)</label>
+                        <input type="text" name="host" value="{{ pve_config.host if pve_config else '192.168.1.100' }}" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Порт API</label>
+                        <input type="number" name="port" value="{{ pve_config.port if pve_config else 8006 }}" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Пользователь (например: itcourses@pve)</label>
+                        <input type="text" name="user" value="{{ pve_config.user if pve_config else 'root@pam' }}" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Пароль</label>
+                        <input type="password" name="password" value="{{ pve_config.password if pve_config else '' }}">
+                    </div>
+                    <div class="form-group">
+                        <label>Узел (Node)</label>
+                        <input type="text" name="node" value="{{ pve_config.node if pve_config else 'pve' }}" required>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" name="verify_ssl" {{ 'checked' if pve_config and pve_config.verify_ssl else '' }}>
+                            Проверять SSL сертификат
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Сохранить настройки</button>
+                    <button type="button" class="btn btn-secondary" onclick="testConnection()">Тест подключения</button>
+                </form>
+                <div id="connection-result" style="margin-top: 15px;"></div>
+            </div>
+
+            <div class="form-card">
+                <h3>Доступные шаблоны LXC</h3>
+                <div id="templates-list">
+                    <p class="text-muted">Нажмите "Тест подключения" для загрузки списка шаблонов</p>
+                </div>
+            </div>
+
+            <div class="form-card">
+                <h3>Все контейнеры LXC</h3>
+                <div id="containers-list">
+                    <p class="text-muted">Нажмите "Тест подключения" для загрузки списка контейнеров</p>
+                </div>
+            </div>
+        </div>
+
         <!-- Users Tab -->
-        <div id="users-tab" class="tab-content active">
+        <div id="users-tab" class="tab-content">
             <h2>Управление пользователями</h2>
             
             <div class="form-card">
@@ -241,6 +296,58 @@
             
             document.getElementById(tabName + '-tab').classList.add('active');
             event.target.classList.add('active');
+        }
+
+        async function testConnection() {
+            const resultDiv = document.getElementById('connection-result');
+            const templatesDiv = document.getElementById('templates-list');
+            const containersDiv = document.getElementById('containers-list');
+            
+            resultDiv.innerHTML = '<p class="text-muted">Проверка подключения...</p>';
+            
+            try {
+                const response = await fetch('/admin/test_pve_connection');
+                const data = await response.json();
+                
+                if (data.success) {
+                    resultDiv.innerHTML = `<p class="alert alert-success">${data.message}</p>`;
+                    
+                    // Отображаем шаблоны
+                    if (data.templates && data.templates.length > 0) {
+                        let templatesHtml = '<table class="data-table"><thead><tr><th>VM ID</th><th>Имя</th><th>Описание</th><th>Статус</th></tr></thead><tbody>';
+                        data.templates.forEach(t => {
+                            templatesHtml += `<tr><td>${t.vmid}</td><td>${t.name}</td><td>${t.description || '-'}</td><td><span class="status-badge status-${t.status}">${t.status}</span></td></tr>`;
+                        });
+                        templatesHtml += '</tbody></table>';
+                        templatesDiv.innerHTML = templatesHtml;
+                    } else {
+                        templatesDiv.innerHTML = '<p class="text-muted">Шаблоны не найдены</p>';
+                    }
+                    
+                    // Отображаем все контейнеры
+                    if (data.containers && data.containers.length > 0) {
+                        let containersHtml = '<table class="data-table"><thead><tr><th>VM ID</th><th>Имя</th><th>Статус</th><th>Тип</th><th>CPU</th><th>Память</th></tr></thead><tbody>';
+                        data.containers.forEach(c => {
+                            const type = c.template ? 'Шаблон' : 'Контейнер';
+                            const cpuUsage = c.maxcpu > 0 ? Math.round((c.cpu / c.maxcpu) * 100) + '%' : '0%';
+                            const memUsage = c.maxmem > 0 ? Math.round((c.mem / c.maxmem) * 100) + '%' : '0%';
+                            containersHtml += `<tr><td>${c.vmid}</td><td>${c.name}</td><td><span class="status-badge status-${c.status}">${c.status}</span></td><td>${type}</td><td>${cpuUsage}</td><td>${memUsage}</td></tr>`;
+                        });
+                        containersHtml += '</tbody></table>';
+                        containersDiv.innerHTML = containersHtml;
+                    } else {
+                        containersDiv.innerHTML = '<p class="text-muted">Контейнеры не найдены</p>';
+                    }
+                } else {
+                    resultDiv.innerHTML = `<p class="alert alert-error">${data.message}</p>`;
+                    templatesDiv.innerHTML = '';
+                    containersDiv.innerHTML = '';
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<p class="alert alert-error">Ошибка: ${error.message}</p>`;
+                templatesDiv.innerHTML = '';
+                containersDiv.innerHTML = '';
+            }
         }
     </script>
 </body>
