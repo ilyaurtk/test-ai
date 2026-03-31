@@ -78,13 +78,6 @@
                     <p class="text-muted">Нажмите "Тест подключения" для загрузки списка шаблонов</p>
                 </div>
             </div>
-
-            <div class="form-card">
-                <h3>Все контейнеры LXC</h3>
-                <div id="containers-list">
-                    <p class="text-muted">Нажмите "Тест подключения" для загрузки списка контейнеров</p>
-                </div>
-            </div>
         </div>
 
         <!-- Users Tab -->
@@ -295,8 +288,6 @@
         async function testConnection() {
             const resultDiv = document.getElementById('connection-result');
             const templatesDiv = document.getElementById('templates-list');
-            const containersDiv = document.getElementById('containers-list');
-            const pveContainersTbody = document.getElementById('pve-containers-tbody');
             
             resultDiv.innerHTML = '<p class="text-muted">Проверка подключения...</p>';
             
@@ -321,29 +312,13 @@
                     } else {
                         templatesDiv.innerHTML = '<p class="text-muted">Шаблоны не найдены</p>';
                     }
-                    
-                    // Отображаем все контейнеры в отдельной таблице на вкладке Containers
-                    if (data.containers && data.containers.length > 0) {
-                        let containersHtml = '';
-                        data.containers.forEach(c => {
-                            const type = c.template ? '✓' : '-';
-                            containersHtml += `<tr><td>${c.vmid}</td><td>${c.name}</td><td>pve</td><td><span class="status-badge status-${c.status}">${c.status}</span></td><td>${type}</td></tr>`;
-                        });
-                        pveContainersTbody.innerHTML = containersHtml;
-                    } else {
-                        pveContainersTbody.innerHTML = '<tr><td colspan="5" class="text-muted">Контейнеры не найдены</td></tr>';
-                    }
                 } else {
                     resultDiv.innerHTML = `<p class="alert alert-error">${data.message}</p>`;
                     templatesDiv.innerHTML = '';
-                    containersDiv.innerHTML = '';
-                    pveContainersTbody.innerHTML = '<tr><td colspan="5" class="text-muted">Ошибка подключения</td></tr>';
                 }
             } catch (error) {
                 resultDiv.innerHTML = `<p class="alert alert-error">Ошибка: ${error.message}</p>`;
                 templatesDiv.innerHTML = '';
-                containersDiv.innerHTML = '';
-                pveContainersTbody.innerHTML = '<tr><td colspan="5" class="text-muted">Ошибка подключения</td></tr>';
             }
         }
     </script>
