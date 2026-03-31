@@ -137,6 +137,11 @@
             
             term.writeln('\x1b[32m✓ Подключено к серверу\x1b[0m');
             term.writeln(`\x1b[36mПодключение к контейнеру Proxmox VE (VM ${vmId}, Node: ${node})...\x1b[0m`);
+            // Инициализируем сессию терминала
+            socket.emit('terminal_init', {
+                session_token: sessionToken
+            });
+
             
             // Приветственное сообщение
             term.writeln('');
