@@ -622,8 +622,8 @@ def request_terminal(course_id):
     
     # Ждем пока контейнер будет создан и готов к запуску
     import time
-    max_wait = 60  # Максимальное время ожидания 60 секунд
-    wait_interval = 2  # Интервал проверки 2 секунды
+    max_wait = 120  # Максимальное время ожидания 120 секунд
+    wait_interval = 3  # Интервал проверки 3 секунды
     waited = 0
     
     while waited < max_wait:
@@ -635,14 +635,26 @@ def request_terminal(course_id):
         
         # Если контейнер существует и не в состоянии создания, пробуем запустить
         if status != 'unknown':
-            # Небольшая дополнительная задержка для полной готовности
-            time.sleep(1)
+            # Дополнительная задержка для полной готовности файловой системы
+            time.sleep(5)
             break
     
-    if not start_container(new_vm_id, node):
+    # Пробуем запустить контейнер с повторными попытками
+    start_attempts = 3
+    started = False
+    for attempt in range(start_attempts):
+        if start_container(new_vm_id, node):
+            started = True
+            break
+        time.sleep(2)
+    
+    if not started:
         conn.close()
-        flash('Не удалось запустить рабочее место.', 'error')
+        flash('Не удалось запустить рабочее место после нескольких попыток.', 'error')
         return redirect(url_for('view_course', course_id=course_id))
+    
+    # Дополнительная пауза после запуска для инициализации сети
+    time.sleep(3)
     
     # Создаем запись в таблице containers для нового контейнера
     cursor.execute("""
