@@ -14,7 +14,7 @@ fi
 
 # Создание роли для IT Courses
 echo "[1/3] Создание роли ITCourses..."
-pveum role add ITCourses -privs "VM.Allocate VM.Audit VM.Config.Disk VM.Config.Network VM.Monitor VM.PowerMgmt SDN.Use" 2>/dev/null || echo "Роль ITCourses уже существует"
+pveum role add ITCourses -privs "VM.Allocate VM.Audit VM.Config.Disk VM.Config.Network VM.Config.Options VM.PowerMgmt Sys.Audit Sys.Console SDN.Use" 2>/dev/null || echo "Роль ITCourses уже существует"
 
 # Создание пользователя itcourses
 echo "[2/3] Создание пользователя itcourses@pve..."
