@@ -739,6 +739,7 @@ def terminal(session_token):
     
     return render_template('terminal.html', 
                          session_data=session_data, 
+                         session_token=session_token,
                          PVE_HOST=PVE_HOST, 
                          PVE_PORT=PVE_PORT,
                          console_ticket=console_ticket)
