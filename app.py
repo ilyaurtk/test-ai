@@ -116,6 +116,7 @@ def init_db():
             description TEXT,
             content TEXT,
             image_path TEXT,
+            container_id TEXT,
             template_vm_id INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )

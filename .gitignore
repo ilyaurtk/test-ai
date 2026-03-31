@@ -12,32 +12,46 @@ venv/
 .env
 .env.local
 .env.*
-.pytest_cache/
-.mypy_cache/
-.coverage
-htmlcov/
+.venv.bak/
+venv.bak/
 
-# Build artifacts
-build/
-dist/
-*.egg
-*.egg-info/
-*.so
+# Database
+*.db
+*.sqlite
+*.sqlite3
 
 # Logs
 *.log
 
+# Temporary files
+*.tmp
+*.temp
+*~
+.swp
+.swo
+
 # OS generated files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
-# Editor files
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*.tmp
 
-# Coverage
-coverage/
+# Build artifacts
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+.tox/
 ```
