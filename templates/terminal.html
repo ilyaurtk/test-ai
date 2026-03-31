@@ -1,87 +1,215 @@
-{% extends "base.html" %}
-
-{% block title %}Терминал - {{ course.title }}{% endblock %}
-
-{% block content %}
-<div class="terminal-panel" style="height: calc(100vh - 150px);">
-    <div class="card-header">
-        <h2 style="color: var(--primary-green);">Терминал: {{ course.title }}</h2>
-        <a href="{{ url_for('view_course', course_id=course.id) }}" class="btn">← Назад к курсу</a>
-    </div>
-    
-    <div class="terminal-active" style="flex: 1;">
-        <div style="margin-bottom: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
-            <span style="color: var(--text-secondary);">Контейнер: {{ course.container_name or 'Not configured' }}</span>
-            <span style="float: right;" class="badge badge-success">Подключено</span>
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Терминал - {{ session_data.course_title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <!-- Подключаем xterm.js для терминала -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+    <!-- Подключаем Socket.IO -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        .terminal-container {
+            height: calc(100vh - 60px);
+            display: flex;
+            flex-direction: column;
+        }
+        .terminal-header {
+            background: #0a1f0a;
+            padding: 15px 20px;
+            border-bottom: 2px solid #00ff41;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .terminal-body {
+            flex: 1;
+            background: #000;
+            padding: 10px;
+            overflow: hidden;
+        }
+        #terminal {
+            width: 100%;
+            height: 100%;
+        }
+        .terminal-info-bar {
+            background: #0a1f0a;
+            padding: 10px 20px;
+            border-top: 1px solid #00ff41;
+            font-size: 12px;
+            color: #00ff41;
+        }
+        .connection-status {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-connected {
+            background: #00ff41;
+            box-shadow: 0 0 10px #00ff41;
+        }
+        .status-disconnected {
+            background: #ff4444;
+            box-shadow: 0 0 10px #ff4444;
+        }
+        .status-connecting {
+            background: #ffaa00;
+            box-shadow: 0 0 10px #ffaa00;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <div class="terminal-container">
+        <div class="terminal-header">
+            <div>
+                <h2 style="margin: 0;">{{ session_data.course_title }}</h2>
+                <small>
+                    <span id="connectionStatus" class="connection-status status-disconnected"></span>
+                    VM ID: {{ session_data.pve_vm_id }} | Node: {{ session_data.pve_node }}
+                </small>
+            </div>
+            <a href="{{ url_for('view_course', course_id=session_data.course_id) }}" class="btn btn-small">Завершить сессию</a>
         </div>
         
-        <div style="font-family: 'Courier New', monospace;">
-            <div>$ Connecting to PVE container...</div>
-            <div>$ Connection established.</div>
-            <div>$ Welcome to IT Course Platform Terminal</div>
-            <div>$ Container: {{ course.container_name or 'N/A' }}</div>
-            <div><br></div>
-            <div id="terminal-history"></div>
-            <div style="display: flex; align-items: center;">
-                <span style="color: var(--primary-green); margin-right: 0.5rem;">$</span>
-                <input type="text" id="terminal-input" 
-                       style="background: transparent; border: none; color: var(--primary-green); 
-                              font-family: inherit; font-size: inherit; flex: 1; outline: none;"
-                       placeholder="Введите команду..." autofocus>
-                <span class="terminal-cursor"></span>
-            </div>
+        <div class="terminal-body">
+            <div id="terminal"></div>
+        </div>
+        
+        <div class="terminal-info-bar">
+            ⚠️ Терминал подключён к контейнеру Proxmox VE (VM {{ session_data.pve_vm_id }}). Все изменения сохраняются в изолированной среде.
         </div>
     </div>
-</div>
-{% endblock %}
 
-{% block extra_js %}
-<script>
-const terminalInput = document.getElementById('terminal-input');
-const terminalHistory = document.getElementById('terminal-history');
-const commandHistory = [];
-let historyIndex = -1;
-
-terminalInput.addEventListener('keypress', function(e) {
-    if (e.key === 'Enter') {
-        const command = terminalInput.value.trim();
-        if (command) {
-            // Add command to history display
-            const cmdDiv = document.createElement('div');
-            cmdDiv.innerHTML = `<span style="color: var(--primary-green);">$</span> ${command}`;
-            terminalHistory.appendChild(cmdDiv);
+    <script>
+        // Инициализация xterm.js терминала
+        const term = new Terminal({
+            cursorBlink: true,
+            fontSize: 14,
+            fontFamily: 'Courier New, monospace',
+            theme: {
+                background: '#000000',
+                foreground: '#00ff41',
+                cursor: '#00ff41',
+                cursorAccent: '#000000',
+                selection: 'rgba(0, 255, 65, 0.3)',
+                black: '#000000',
+                red: '#ff4444',
+                green: '#00ff41',
+                yellow: '#ffaa00',
+                blue: '#0066ff',
+                magenta: '#ff00ff',
+                cyan: '#00ffff',
+                white: '#ffffff'
+            }
+        });
+        
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(document.getElementById('terminal'));
+        fitAddon.fit();
+        
+        // Socket.IO подключение
+        const socket = io();
+        const sessionToken = '{{ session_token }}';
+        const vmId = {{ session_data.pve_vm_id }};
+        const node = '{{ session_data.pve_node }}';
+        
+        let isConnected = false;
+        let commandBuffer = '';
+        
+        // Обработка подключения к Socket.IO
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            const statusEl = document.getElementById('connectionStatus');
+            statusEl.classList.remove('status-disconnected', 'status-connecting');
+            statusEl.classList.add('status-connected');
+            isConnected = true;
             
-            // Store in command history
-            commandHistory.push(command);
-            historyIndex = commandHistory.length;
+            term.writeln('\x1b[32m✓ Подключено к серверу\x1b[0m');
+            term.writeln(`\x1b[36mПодключение к контейнеру Proxmox VE (VM ${vmId}, Node: ${node})...\x1b[0m`);
             
-            // Simulate response (in production, this would be actual container output)
-            setTimeout(() => {
-                const responseDiv = document.createElement('div');
-                responseDiv.style.color = 'var(--text-secondary)';
-                responseDiv.textContent = `[SIMULATED] Executing: ${command}`;
-                terminalHistory.appendChild(responseDiv);
-                
-                // Scroll to bottom
-                window.scrollTo(0, document.body.scrollHeight);
-            }, 100);
+            // Приветственное сообщение
+            term.writeln('');
+            term.writeln('\x1b[33mДобро пожаловать в рабочее место IT-курсов!\x1b[0m');
+            term.writeln('\x1b[37mВведите команду и нажмите Enter:\x1b[0m');
+            term.write('\x1b[32m$\x1b[0m ');
+        });
+        
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+            const statusEl = document.getElementById('connectionStatus');
+            statusEl.classList.remove('status-connected', 'status-connecting');
+            statusEl.classList.add('status-disconnected');
+            isConnected = false;
+            term.writeln('\x1b[31m✗ Соединение потеряно\x1b[0m');
+        });
+        
+        socket.on('terminal_output', (data) => {
+            if (data.output) {
+                term.write(data.output.replace(/\n/g, '\r\n'));
+            } else if (data.error) {
+                term.writeln(`\x1b[31mОшибка: ${data.error}\x1b[0m`);
+            }
+        });
+        
+        // Обработка ввода с клавиатуры
+        term.onData(data => {
+            if (!isConnected) {
+                return;
+            }
             
-            terminalInput.value = '';
-        }
-    }
-});
-
-// Command history navigation
-terminalInput.addEventListener('keydown', function(e) {
-    if (e.key === 'ArrowUp' && commandHistory.length > 0) {
-        e.preventDefault();
-        historyIndex = Math.max(0, historyIndex - 1);
-        terminalInput.value = commandHistory[historyIndex];
-    } else if (e.key === 'ArrowDown' && commandHistory.length > 0) {
-        e.preventDefault();
-        historyIndex = Math.min(commandHistory.length, historyIndex + 1);
-        terminalInput.value = historyIndex < commandHistory.length ? commandHistory[historyIndex] : '';
-    }
-});
-</script>
-{% endblock %}
+            if (data === '\r') {
+                // Enter pressed - отправляем команду
+                term.write('\r\n');
+                if (commandBuffer.trim()) {
+                    socket.emit('terminal_input', {
+                        session_token: sessionToken,
+                        command: commandBuffer
+                    });
+                }
+                commandBuffer = '';
+                term.write('\x1b[32m$\x1b[0m ');
+            } else if (data === '\u007F') {
+                // Backspace
+                if (commandBuffer.length > 0) {
+                    commandBuffer = commandBuffer.slice(0, -1);
+                    term.write('\b \b');
+                }
+            } else if (data.charCodeAt(0) > 31 && data.charCodeAt(0) < 127) {
+                // Printable character
+                commandBuffer += data;
+                term.write(data);
+            } else if (data === '\x03') {
+                // Ctrl+C
+                term.write('^C\r\n\x1b[32m$\x1b[0m ');
+                commandBuffer = '';
+            }
+        });
+        
+        // Изменение размера терминала
+        window.addEventListener('resize', () => {
+            fitAddon.fit();
+            socket.emit('terminal_resize', {
+                session_token: sessionToken,
+                cols: term.cols,
+                rows: term.rows
+            });
+        });
+        
+        // Начальное состояние подключения
+        const statusEl = document.getElementById('connectionStatus');
+        statusEl.classList.add('status-connecting');
+        term.writeln('\x1b[33mПодключение к серверу...\x1b[0m');
+    </script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IT Courses - Панель студента</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">IT COURSES</div>
+        <div class="nav-user">
+            <span>{{ session.username }}</span>
+            <a href="{{ url_for('logout') }}" class="btn btn-small">Выход</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <h1>Мои курсы</h1>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        {% if active_sessions %}
+        <div class="active-sessions">
+            <h2>Активные сессии</h2>
+            <div class="sessions-grid">
+                {% for session in active_sessions %}
+                <div class="session-card">
+                    <h3>{{ session.course_title }}</h3>
+                    <p>Контейнер: {{ session.container_name or 'N/A' }}</p>
+                    <a href="{{ url_for('terminal', session_token=session.session_token) }}" class="btn btn-primary">Продолжить работу</a>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="courses-grid">
+            {% for course in courses %}
+            <div class="course-card">
+                {% if course.image_path %}
+                <img src="{{ url_for('uploaded_file', filename=course.image_path.split('/')[-1]) }}" alt="{{ course.title }}" class="course-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
+                <div class="course-image-placeholder" style="display:none">&lt;/&gt;</div>
+                {% else %}
+                <div class="course-image-placeholder">&lt;/&gt;</div>
+                {% endif %}
+                <div class="course-content">
+                    <h3>{{ course.title }}</h3>
+                    <p>{{ course.description }}</p>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: {{ course.progress }}%"></div>
+                        <span class="progress-text">{{ course.progress }}%</span>
+                    </div>
+                    <a href="{{ url_for('view_course', course_id=course.id) }}" class="btn btn-primary">Начать курс</a>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</body>
+</html>
