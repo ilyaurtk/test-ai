@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Создать курс - Админ-панель{% endblock %}
+
+{% block content %}
+<h1 style="color: var(--primary-green); margin-bottom: 2rem;">Создать новый курс</h1>
+
+<div class="card" style="max-width: 800px;">
+    <form method="POST" enctype="multipart/form-data">
+        <div class="form-group">
+            <label for="title">Название курса *</label>
+            <input type="text" id="title" name="title" class="form-control" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="description">Краткое описание</label>
+            <textarea id="description" name="description" class="form-control" rows="3"></textarea>
+        </div>
+        
+        <div class="form-group">
+            <label for="content">Содержание задания (HTML поддерживается)</label>
+            <textarea id="content" name="content" class="form-control" rows="10" placeholder="<h3>Заголовок</h3><p>Описание задания...</p>"></textarea>
+        </div>
+        
+        <div class="form-group">
+            <label for="container_id">PVE Контейнер</label>
+            <select id="container_id" name="container_id" class="form-control">
+                <option value="">-- Не назначен --</option>
+                {% for container in containers %}
+                    <option value="{{ container.id }}">{{ container.name }}</option>
+                {% endfor %}
+            </select>
+            <small style="color: var(--text-secondary);">Выберите контейнер для этого курса</small>
+        </div>
+        
+        <div class="form-group">
+            <label for="image">Изображение курса</label>
+            <input type="file" id="image" name="image" class="form-control" accept="image/*">
+        </div>
+        
+        <div style="display: flex; gap: 1rem; margin-top: 2rem;">
+            <button type="submit" class="btn btn-primary">Создать курс</button>
+            <a href="{{ url_for('admin_courses') }}" class="btn">Отмена</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block title %}Терминал - {{ course.title }}{% endblock %}
+
+{% block content %}
+<div class="terminal-panel" style="height: calc(100vh - 150px);">
+    <div class="card-header">
+        <h2 style="color: var(--primary-green);">Терминал: {{ course.title }}</h2>
+        <a href="{{ url_for('view_course', course_id=course.id) }}" class="btn">← Назад к курсу</a>
+    </div>
+    
+    <div class="terminal-active" style="flex: 1;">
+        <div style="margin-bottom: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
+            <span style="color: var(--text-secondary);">Контейнер: {{ course.container_name or 'Not configured' }}</span>
+            <span style="float: right;" class="badge badge-success">Подключено</span>
+        </div>
+        
+        <div style="font-family: 'Courier New', monospace;">
+            <div>$ Connecting to PVE container...</div>
+            <div>$ Connection established.</div>
+            <div>$ Welcome to IT Course Platform Terminal</div>
+            <div>$ Container: {{ course.container_name or 'N/A' }}</div>
+            <div><br></div>
+            <div id="terminal-history"></div>
+            <div style="display: flex; align-items: center;">
+                <span style="color: var(--primary-green); margin-right: 0.5rem;">$</span>
+                <input type="text" id="terminal-input" 
+                       style="background: transparent; border: none; color: var(--primary-green); 
+                              font-family: inherit; font-size: inherit; flex: 1; outline: none;"
+                       placeholder="Введите команду..." autofocus>
+                <span class="terminal-cursor"></span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const terminalInput = document.getElementById('terminal-input');
+const terminalHistory = document.getElementById('terminal-history');
+const commandHistory = [];
+let historyIndex = -1;
+
+terminalInput.addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') {
+        const command = terminalInput.value.trim();
+        if (command) {
+            // Add command to history display
+            const cmdDiv = document.createElement('div');
+            cmdDiv.innerHTML = `<span style="color: var(--primary-green);">$</span> ${command}`;
+            terminalHistory.appendChild(cmdDiv);
+            
+            // Store in command history
+            commandHistory.push(command);
+            historyIndex = commandHistory.length;
+            
+            // Simulate response (in production, this would be actual container output)
+            setTimeout(() => {
+                const responseDiv = document.createElement('div');
+                responseDiv.style.color = 'var(--text-secondary)';
+                responseDiv.textContent = `[SIMULATED] Executing: ${command}`;
+                terminalHistory.appendChild(responseDiv);
+                
+                // Scroll to bottom
+                window.scrollTo(0, document.body.scrollHeight);
+            }, 100);
+            
+            terminalInput.value = '';
+        }
+    }
+});
+
+// Command history navigation
+terminalInput.addEventListener('keydown', function(e) {
+    if (e.key === 'ArrowUp' && commandHistory.length > 0) {
+        e.preventDefault();
+        historyIndex = Math.max(0, historyIndex - 1);
+        terminalInput.value = commandHistory[historyIndex];
+    } else if (e.key === 'ArrowDown' && commandHistory.length > 0) {
+        e.preventDefault();
+        historyIndex = Math.min(commandHistory.length, historyIndex + 1);
+        terminalInput.value = historyIndex < commandHistory.length ? commandHistory[historyIndex] : '';
+    }
+});
+</script>
+{% endblock %}
