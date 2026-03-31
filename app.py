@@ -116,8 +116,24 @@ def init_db():
             description TEXT,
             content TEXT,
             image_path TEXT,
-            container_id TEXT,
+            template_vm_id INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_containers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            course_id INTEGER NOT NULL,
+            pve_vm_id INTEGER NOT NULL,
+            pve_node TEXT DEFAULT 'pve',
+            name TEXT NOT NULL,
+            status TEXT DEFAULT 'stopped',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id),
+            FOREIGN KEY (course_id) REFERENCES courses (id),
+            UNIQUE(user_id, course_id)
         )
     ''')
     
@@ -128,6 +144,7 @@ def init_db():
             pve_vm_id INTEGER NOT NULL,
             pve_node TEXT DEFAULT 'pve',
             status TEXT DEFAULT 'stopped',
+            is_template INTEGER DEFAULT 0,
             course_id INTEGER,
             FOREIGN KEY (course_id) REFERENCES courses (id)
         )
@@ -275,6 +292,27 @@ def get_pve_node():
         return config['node']
     return PVE_NODE
 
+def clone_container(template_vm_id, new_vm_id, name, node=None):
+    """Клонировать LXC контейнер из шаблона в Proxmox"""
+    if node is None:
+        node = get_pve_node()
+    endpoint = f"nodes/{node}/lxc/{template_vm_id}/clone"
+    data = {
+        'newid': new_vm_id,
+        'name': name,
+        'full': 1  # Полное клонирование
+    }
+    result = pve_api_request('POST', endpoint, data)
+    return result is not None
+
+def delete_container(vm_id, node=None):
+    """Удалить LXC контейнер в Proxmox"""
+    if node is None:
+        node = get_pve_node()
+    endpoint = f"nodes/{node}/lxc/{vm_id}"
+    result = pve_api_request('DELETE', endpoint)
+    return result is not None
+
 def start_container(vm_id, node=None):
     """Запустить LXC контейнер в Proxmox"""
     if node is None:
@@ -400,8 +438,44 @@ def login():
 
 @app.route('/logout')
 def logout():
+    user_id = session.get('user_id')
+    
+    # Завершаем все активные сессии пользователя и удаляем контейнеры
+    if user_id:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Получаем все активные сессии пользователя
+        cursor.execute("""
+            SELECT ts.id, ts.container_id, cont.pve_vm_id, cont.pve_node
+            FROM terminal_sessions ts
+            JOIN containers cont ON ts.container_id = cont.id
+            WHERE ts.user_id = ? AND ts.status = 'active'
+        """, (user_id,))
+        active_sessions = cursor.fetchall()
+        
+        for sess in active_sessions:
+            # Останавливаем и удаляем контейнер в Proxmox
+            if sess['pve_vm_id']:
+                stop_container(sess['pve_vm_id'], sess['pve_node'])
+                delete_container(sess['pve_vm_id'], sess['pve_node'])
+            
+            # Удаляем запись о контейнере из БД
+            if sess['container_id']:
+                cursor.execute("DELETE FROM containers WHERE id = ?", (sess['container_id'],))
+            
+            # Обновляем статус сессии
+            cursor.execute("""
+                UPDATE terminal_sessions 
+                SET status = 'closed', ended_at = CURRENT_TIMESTAMP 
+                WHERE id = ?
+            """, (sess['id'],))
+        
+        conn.commit()
+        conn.close()
+    
     session.clear()
-    flash('Вы вышли из системы', 'success')
+    flash('Вы вышли из системы. Все рабочие места удалены.', 'success')
     return redirect(url_for('login'))
 
 @app.route('/dashboard')
@@ -486,44 +560,82 @@ def request_terminal(course_id):
     cursor.execute("SELECT * FROM courses WHERE id = ?", (course_id,))
     course = cursor.fetchone()
     
-    if not course or not course['container_id']:
+    if not course or not course['template_vm_id']:
         flash('Для этого курса не настроено рабочее место', 'error')
         conn.close()
         return redirect(url_for('view_course', course_id=course_id))
     
-    cursor.execute("SELECT * FROM containers WHERE id = ?", (course['container_id'],))
-    container = cursor.fetchone()
+    # Проверяем, есть ли уже активная сессия у пользователя для этого курса
+    cursor.execute("""
+        SELECT ts.*, cont.pve_vm_id, cont.pve_node
+        FROM terminal_sessions ts
+        JOIN containers cont ON ts.container_id = cont.id
+        WHERE ts.user_id = ? AND ts.course_id = ? AND ts.status = 'active'
+        ORDER BY ts.started_at DESC LIMIT 1
+    """, (session['user_id'], course_id))
+    existing_session = cursor.fetchone()
     
-    if not container:
-        flash('Контейнер не найден', 'error')
+    if existing_session:
         conn.close()
+        flash('У вас уже есть активная сессия для этого курса', 'info')
+        return redirect(url_for('terminal', session_token=existing_session['session_token']))
+    
+    # Получаем шаблон контейнера из Proxmox
+    template_vm_id = course['template_vm_id']
+    node = get_pve_node()
+    
+    # Генерируем новый VM ID для клонированного контейнера
+    # Получаем список всех контейнеров чтобы найти свободный ID
+    all_containers = get_pve_containers(node)
+    used_ids = [c['vmid'] for c in all_containers]
+    new_vm_id = 1000  # Начальный ID для пользовательских контейнеров
+    while new_vm_id in used_ids:
+        new_vm_id += 1
+    
+    # Генерируем уникальное имя контейнера
+    container_name = f"user{session['user_id']}_course{course_id}_{uuid.uuid4().hex[:8]}"
+    
+    # Клонируем шаблон
+    if not clone_container(template_vm_id, new_vm_id, container_name, node):
+        conn.close()
+        flash('Не удалось создать рабочее место. Проверьте подключение к Proxmox.', 'error')
         return redirect(url_for('view_course', course_id=course_id))
     
-    # Запускаем контейнер через Proxmox
-    if start_container(container['pve_vm_id'], container['pve_node']):
-        session_token = str(uuid.uuid4())
-        
-        cursor.execute("""
-            INSERT INTO terminal_sessions (user_id, course_id, session_token, container_id)
-            VALUES (?, ?, ?, ?)
-        """, (session['user_id'], course_id, session_token, container['id']))
-        
-        conn.commit()
-        
-        # Обновляем время последнего доступа
-        cursor.execute("""
-            INSERT OR REPLACE INTO user_progress (user_id, course_id, last_accessed)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-        """, (session['user_id'], course_id))
-        conn.commit()
-        
+    # Ждем пока контейнер будет создан и запускаем его
+    import time
+    time.sleep(3)  # Даем время на создание контейнера
+    
+    if not start_container(new_vm_id, node):
         conn.close()
-        flash('Рабочее место запущено!', 'success')
-        return redirect(url_for('terminal', session_token=session_token))
-    else:
-        conn.close()
-        flash('Не удалось запустить рабочее место. Проверьте подключение к Proxmox.', 'error')
+        flash('Не удалось запустить рабочее место.', 'error')
         return redirect(url_for('view_course', course_id=course_id))
+    
+    # Создаем запись в таблице containers для нового контейнера
+    cursor.execute("""
+        INSERT INTO containers (name, pve_vm_id, pve_node, status, is_template, course_id)
+        VALUES (?, ?, ?, 'running', 0, ?)
+    """, (container_name, new_vm_id, node, course_id))
+    container_id = cursor.lastrowid
+    
+    # Создаем сессию терминала
+    session_token = str(uuid.uuid4())
+    cursor.execute("""
+        INSERT INTO terminal_sessions (user_id, course_id, session_token, container_id, status)
+        VALUES (?, ?, ?, ?, 'active')
+    """, (session['user_id'], course_id, session_token, container_id))
+    
+    conn.commit()
+    
+    # Обновляем время последнего доступа
+    cursor.execute("""
+        INSERT OR REPLACE INTO user_progress (user_id, course_id, last_accessed)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+    """, (session['user_id'], course_id))
+    conn.commit()
+    conn.close()
+    
+    flash('Рабочее место создано и запущено!', 'success')
+    return redirect(url_for('terminal', session_token=session_token))
 
 @app.route('/terminal/<session_token>')
 @login_required
@@ -737,7 +849,7 @@ def create_course():
     title = request.form['title']
     description = request.form['description']
     content = request.form['content']
-    container_id = request.form.get('container_id')
+    template_vm_id = request.form.get('template_vm_id')
     
     image_path = None
     if 'image' in request.files:
@@ -752,9 +864,9 @@ def create_course():
     cursor = conn.cursor()
     
     cursor.execute("""
-        INSERT INTO courses (title, description, content, image_path, container_id)
+        INSERT INTO courses (title, description, content, image_path, template_vm_id)
         VALUES (?, ?, ?, ?, ?)
-    """, (title, description, content, image_path, container_id if container_id else None))
+    """, (title, description, content, image_path, template_vm_id if template_vm_id else None))
     
     conn.commit()
     conn.close()
@@ -837,7 +949,48 @@ def handle_connect():
 
 @socketio.on('disconnect')
 def handle_disconnect():
+    """Обработка отключения клиента - завершение сессии и удаление контейнера"""
     print(f'Клиент отключился: {request.sid}')
+    
+    # Получаем user_id из session (если доступен)
+    from flask import session as flask_session
+    user_id = flask_session.get('user_id')
+    
+    if user_id:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Получаем активные сессии пользователя
+        cursor.execute("""
+            SELECT ts.id, ts.container_id, cont.pve_vm_id, cont.pve_node
+            FROM terminal_sessions ts
+            JOIN containers cont ON ts.container_id = cont.id
+            WHERE ts.user_id = ? AND ts.status = 'active'
+            LIMIT 1
+        """, (user_id,))
+        active_session = cursor.fetchone()
+        
+        if active_session:
+            # Останавливаем и удаляем контейнер в Proxmox
+            if active_session['pve_vm_id']:
+                stop_container(active_session['pve_vm_id'], active_session['pve_node'])
+                delete_container(active_session['pve_vm_id'], active_session['pve_node'])
+            
+            # Удаляем запись о контейнере из БД
+            if active_session['container_id']:
+                cursor.execute("DELETE FROM containers WHERE id = ?", (active_session['container_id'],))
+            
+            # Обновляем статус сессии
+            cursor.execute("""
+                UPDATE terminal_sessions 
+                SET status = 'closed', ended_at = CURRENT_TIMESTAMP 
+                WHERE id = ?
+            """, (active_session['id'],))
+            
+            conn.commit()
+            print(f"Сессия пользователя {user_id} завершена, контейнер удален")
+        
+        conn.close()
 
 @socketio.on('terminal_input')
 def handle_terminal_input(data):
