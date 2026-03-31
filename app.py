@@ -1076,6 +1076,9 @@ def handle_disconnect():
         
         conn.close()
 
+# Хранилище активных WebSocket подключений к консолям
+console_connections = {}
+
 @socketio.on('terminal_init')
 def handle_terminal_init(data):
     """Инициализация сессии терминала при подключении"""
@@ -1112,6 +1115,23 @@ def handle_terminal_init(data):
         emit('terminal_output', {'error': f'Контейнер не запущен (статус: {session_data["container_status"]})'})
         return
     
+    # Получаем ticket для доступа к консоли
+    console_ticket = get_container_console_ticket(session_data['pve_vm_id'], session_data['pve_node'])
+    
+    if not console_ticket:
+        emit('terminal_output', {'error': 'Не удалось получить доступ к консоли контейнера'})
+        return
+    
+    # Сохраняем информацию о сессии
+    sid = flask_request.sid
+    console_connections[sid] = {
+        'session_token': session_token,
+        'vm_id': session_data['pve_vm_id'],
+        'node': session_data['pve_node'],
+        'ticket': console_ticket.get('ticket'),
+        'vmid': session_data['pve_vm_id']
+    }
+    
     emit('terminal_output', {'output': f'\x1b[32m✓ Сессия инициализирована для VM {session_data["pve_vm_id"]}\x1b[0m\r\n'})
 
 @socketio.on('terminal_input')
@@ -1129,41 +1149,73 @@ def handle_terminal_input(data):
         emit('terminal_output', {'error': 'Требуется авторизация'})
         return
     
-    conn = get_db()
-    cursor = conn.cursor()
+    # Получаем информацию о подключении из хранилища
+    sid = flask_request.sid
+    conn_info = console_connections.get(sid)
     
-    cursor.execute("""
-        SELECT ts.*, cont.pve_vm_id, cont.pve_node, cont.status as container_status
-        FROM terminal_sessions ts
-        JOIN containers cont ON ts.container_id = cont.id
-        WHERE ts.session_token = ? AND ts.user_id = ?
-    """, (session_token, session.get('user_id')))
+    if not conn_info:
+        # Если нет информации в хранилище, пробуем найти сессию в БД
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT ts.*, cont.pve_vm_id, cont.pve_node, cont.status as container_status
+            FROM terminal_sessions ts
+            JOIN containers cont ON ts.container_id = cont.id
+            WHERE ts.session_token = ? AND ts.user_id = ?
+        """, (session_token, session.get('user_id')))
+        
+        session_data = cursor.fetchone()
+        conn.close()
+        
+        if not session_data:
+            app.logger.error(f"Session not found: {session_token}")
+            emit('terminal_output', {'error': f'Сессия не найдена (token: {session_token})'})
+            return
+        
+        # Проверяем статус контейнера
+        if session_data['container_status'] != 'running':
+            emit('terminal_output', {'error': f'Контейнер не запущен (статус: {session_data["container_status"]})'})
+            return
+        
+        vm_id = session_data['pve_vm_id']
+        node = session_data['pve_node']
+    else:
+        vm_id = conn_info['vm_id']
+        node = conn_info['node']
     
-    session_data = cursor.fetchone()
-    conn.close()
+    app.logger.info(f"Executing command in VM {vm_id}: {command}")
     
-    if not session_data:
-        app.logger.error(f"Session not found: {session_token}")
-        emit('terminal_output', {'error': f'Сессия не найдена (token: {session_token})'})
-        return
-    
-    # Проверяем статус контейнера
-    if session_data['container_status'] != 'running':
-        emit('terminal_output', {'error': f'Контейнер не запущен (статус: {session_data["container_status"]})'})
-        return
-    
-    app.logger.info(f"Executing command in VM {session_data['pve_vm_id']}: {command}")
-    
-    # Выполняем команду через Proxmox API
-    endpoint = f"nodes/{session_data['pve_node']}/lxc/{session_data['pve_vm_id']}/exec"
+    # Для LXC контейнеров используем enter в namespace exec
+    # Сначала пробуем выполнить команду напрямую через bash
+    endpoint = f"nodes/{node}/lxc/{vm_id}/status/exec"
     exec_data = {
-        'command': ['/bin/bash', '-c', command],
-        'node': session_data['pve_node']
+        'command': command,
+        'subsystem': 'login'
     }
     result = pve_api_request('POST', endpoint, exec_data)
     
+    # Если первый способ не сработал, пробуем альтернативный вариант
+    if not result or 'data' not in result:
+        endpoint = f"nodes/{node}/lxc/{vm_id}/execute"
+        exec_data = {
+            'command': ['/bin/bash', '-c', command]
+        }
+        result = pve_api_request('POST', endpoint, exec_data)
+    
+    # Если все еще нет результата, пробуем через unshare (для некоторых версий Proxmox)
+    if not result or 'data' not in result:
+        endpoint = f"nodes/{node}/lxc/{vm_id}/exec"
+        exec_data = {
+            'command': ['/bin/bash', '-c', command],
+            'subsystem': 'login'
+        }
+        result = pve_api_request('POST', endpoint, exec_data)
+    
     if result and 'data' in result:
         output = result['data'].get('outData', '')
+        exit_code = result['data'].get('exitcode', 0)
+        
         if output:
             # Декодируем base64 вывод
             try:
@@ -1172,11 +1224,22 @@ def handle_terminal_input(data):
             except Exception as e:
                 app.logger.error(f"Decode error: {e}")
                 emit('terminal_output', {'output': str(result['data'])})
-        else:
+        elif exit_code == 0:
+            # Команда выполнена успешно, но нет вывода
             emit('terminal_output', {'output': ''})
+        else:
+            err_data = result['data'].get('errData', '')
+            if err_data:
+                try:
+                    decoded_err = base64.b64decode(err_data).decode('utf-8', errors='replace')
+                    emit('terminal_output', {'output': decoded_err})
+                except:
+                    emit('terminal_output', {'output': str(result['data'])})
+            else:
+                emit('terminal_output', {'output': f'[Exit code: {exit_code}]'})
     else:
-        app.logger.error(f"Failed to execute command: {result}")
-        emit('terminal_output', {'error': 'Ошибка выполнения команды. Проверьте подключение к Proxmox.'})
+        app.logger.error(f"Failed to execute command. Response: {result}")
+        emit('terminal_output', {'error': f'Ошибка выполнения команды. Ответ API: {result}'})
 
 @socketio.on('terminal_resize')
 def handle_terminal_resize(data):
