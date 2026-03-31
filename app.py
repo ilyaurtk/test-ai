@@ -151,6 +151,12 @@ def init_db():
         )
     ''')
     
+    # Миграция: добавляем столбец is_template если он отсутствует
+    cursor.execute("PRAGMA table_info(containers)")
+    columns = [column[1] for column in cursor.fetchall()]
+    if 'is_template' not in columns:
+        cursor.execute('ALTER TABLE containers ADD COLUMN is_template INTEGER DEFAULT 0')
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_progress (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
