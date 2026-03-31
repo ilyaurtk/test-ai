@@ -756,8 +756,8 @@ def admin_dashboard():
     cursor.execute("SELECT * FROM courses ORDER BY created_at DESC")
     courses = cursor.fetchall()
     
-    cursor.execute("SELECT * FROM containers ORDER BY id DESC")
-    containers = cursor.fetchall()
+    # Контейнеры теперь загружаются автоматически из Proxmox, 
+    # поэтому не загружаем их из БД для отображения
     
     cursor.execute("""
         SELECT up.*, u.username, c.title as course_title
@@ -779,7 +779,6 @@ def admin_dashboard():
     return render_template('admin_dashboard.html', 
                          users=users, 
                          courses=courses, 
-                         containers=containers,
                          progress_data=progress_data,
                          pve_config=pve_config,
                          pve_templates=pve_templates)
@@ -879,29 +878,30 @@ def create_course():
     flash(f'Курс "{title}" создан', 'success')
     return redirect(url_for('admin_dashboard'))
 
-@app.route('/admin/create_container', methods=['POST'])
-@admin_required
-def create_container():
-    name = request.form['name']
-    pve_vm_id = request.form['pve_vm_id']
-    pve_node = request.form.get('pve_node', 'pve')
+# Эти маршруты больше не используются, так как контейнеры загружаются автоматически из Proxmox
+# @app.route('/admin/create_container', methods=['POST'])
+# @admin_required
+# def create_container():
+#     name = request.form['name']
+#     pve_vm_id = request.form['pve_vm_id']
+#     pve_node = request.form.get('pve_node', 'pve')
     
-    conn = get_db()
-    cursor = conn.cursor()
+#     conn = get_db()
+#     cursor = conn.cursor()
     
-    # Проверяем статус контейнера в Proxmox
-    status = get_container_status(pve_vm_id, pve_node)
+#     # Проверяем статус контейнера в Proxmox
+#     status = get_container_status(pve_vm_id, pve_node)
     
-    cursor.execute("""
-        INSERT INTO containers (name, pve_vm_id, pve_node, status)
-        VALUES (?, ?, ?, ?)
-    """, (name, pve_vm_id, pve_node, status))
+#     cursor.execute("""
+#         INSERT INTO containers (name, pve_vm_id, pve_node, status)
+#         VALUES (?, ?, ?, ?)
+#     """, (name, pve_vm_id, pve_node, status))
     
-    conn.commit()
-    conn.close()
+#     conn.commit()
+#     conn.close()
     
-    flash(f'Контейнер "{name}" добавлен', 'success')
-    return redirect(url_for('admin_dashboard'))
+#     flash(f'Контейнер "{name}" добавлен', 'success')
+#     return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/delete_user/<int:user_id>', methods=['POST'])
 @admin_required
@@ -931,17 +931,18 @@ def delete_course(course_id):
     flash('Курс удалён', 'success')
     return redirect(url_for('admin_dashboard'))
 
-@app.route('/admin/delete_container/<int:container_id>', methods=['POST'])
-@admin_required
-def delete_container(container_id):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM containers WHERE id = ?", (container_id,))
-    conn.commit()
-    conn.close()
+# Этот маршрут больше не используется, так как контейнеры загружаются автоматически из Proxmox
+# @app.route('/admin/delete_container/<int:container_id>', methods=['POST'])
+# @admin_required
+# def delete_container(container_id):
+#     conn = get_db()
+#     cursor = conn.cursor()
+#     cursor.execute("DELETE FROM containers WHERE id = ?", (container_id,))
+#     conn.commit()
+#     conn.close()
     
-    flash('Контейнер удалён', 'success')
-    return redirect(url_for('admin_dashboard'))
+#     flash('Контейнер удалён', 'success')
+#     return redirect(url_for('admin_dashboard'))
 
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
