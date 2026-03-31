@@ -770,6 +770,9 @@ def admin_dashboard():
     # Загружаем конфигурацию PVE
     pve_config = load_pve_config()
     
+    # Автоматически загружаем шаблоны из Proxmox
+    pve_templates = get_pve_templates()
+    
     conn.close()
     
     return render_template('admin_dashboard.html', 
@@ -777,7 +780,8 @@ def admin_dashboard():
                          courses=courses, 
                          containers=containers,
                          progress_data=progress_data,
-                         pve_config=pve_config)
+                         pve_config=pve_config,
+                         pve_templates=pve_templates)
 
 @app.route('/admin/save_pve_config', methods=['POST'])
 @admin_required

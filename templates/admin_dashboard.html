@@ -299,6 +299,47 @@
             event.target.classList.add('active');
         }
 
+        // Автоматически загружаем шаблоны при загрузке страницы
+        document.addEventListener('DOMContentLoaded', function() {
+            loadPveTemplates();
+        });
+
+        async function loadPveTemplates() {
+            try {
+                const response = await fetch('/admin/get_pve_templates');
+                const data = await response.json();
+                
+                if (data.templates && data.templates.length > 0) {
+                    // Обновляем список шаблонов в форме создания курса
+                    const selectElement = document.getElementById('template-vm-select');
+                    if (selectElement) {
+                        // Сохраняем текущее выбранное значение
+                        const currentValue = selectElement.value;
+                        
+                        // Очищаем все опции кроме первой
+                        while (selectElement.options.length > 1) {
+                            selectElement.remove(1);
+                        }
+                        
+                        // Добавляем новые опции из Proxmox
+                        data.templates.forEach(t => {
+                            const option = document.createElement('option');
+                            option.value = t.vmid;
+                            option.textContent = `${t.name} (VM ${t.vmid})`;
+                            selectElement.appendChild(option);
+                        });
+                        
+                        // Восстанавливаем предыдущее выбранное значение если оно существует
+                        if (currentValue) {
+                            selectElement.value = currentValue;
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки шаблонов:', error);
+            }
+        }
+
         async function testConnection() {
             const resultDiv = document.getElementById('connection-result');
             const templatesDiv = document.getElementById('templates-list');
@@ -312,6 +353,9 @@
                 
                 if (data.success) {
                     resultDiv.innerHTML = `<p class="alert alert-success">${data.message}</p>`;
+                    
+                    // Обновляем список шаблонов в форме создания курса
+                    loadPveTemplates();
                     
                     // Отображаем шаблоны
                     if (data.templates && data.templates.length > 0) {
