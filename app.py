@@ -259,6 +259,7 @@ def pve_api_request(method, endpoint, data=None):
     
     ticket, csrf_token = get_pve_ticket()
     if not ticket:
+        print("PVE: Failed to get authentication ticket")
         return None
     
     url = f"https://{host}:{port}/api2/json/{endpoint}"
@@ -280,7 +281,14 @@ def pve_api_request(method, endpoint, data=None):
         if response.status_code in [200, 201]:
             return response.json()
         else:
-            print(f"PVE API error: {response.status_code} - {response.text}")
+            print(f"PVE API error ({method} {endpoint}): {response.status_code} - {response.text}")
+            # Логируем детальную информацию об ошибке для отладки
+            if response.status_code == 400:
+                try:
+                    error_data = response.json()
+                    print(f"PVE API error details: {error_data}")
+                except:
+                    pass
             return None
     except Exception as e:
         print(f"PVE request error: {e}")
@@ -300,10 +308,12 @@ def clone_container(template_vm_id, new_vm_id, name, node=None):
     endpoint = f"nodes/{node}/lxc/{template_vm_id}/clone"
     data = {
         'newid': new_vm_id,
-        'name': name,
+        'hostname': name,  # Для LXC используем hostname вместо name
         'full': 1  # Полное клонирование
     }
     result = pve_api_request('POST', endpoint, data)
+    if result is None:
+        print(f"Clone failed for template {template_vm_id} -> {new_vm_id} ({name})")
     return result is not None
 
 def delete_container(vm_id, node=None):
