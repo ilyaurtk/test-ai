@@ -374,10 +374,38 @@ def get_container_console_ticket(vm_id, node=None):
     """Получить билет для доступа к консоли контейнера через termius/xterm.js"""
     if node is None:
         node = get_pve_node()
+    
+    # Ждем появления сокета консоли перед запросом ticket
+    import time
+    import os
+    console_socket = f"/var/lib/lxc/{vm_id}/console"
+    
+    # Проверяем наличие сокета на сервере Proxmox (предполагаем, что это тот же сервер)
+    # Если сокета нет, ждем его появления до 30 секунд
+    socket_wait = 0
+    while socket_wait < 30:
+        if os.path.exists(console_socket):
+            break
+        time.sleep(1)
+        socket_wait += 1
+    
+    # Дополнительная пауза после появления сокета
+    if os.path.exists(console_socket):
+        time.sleep(2)
+    
     endpoint = f"nodes/{node}/lxc/{vm_id}/termproxy"
-    result = pve_api_request('POST', endpoint)
-    if result and 'data' in result:
-        return result['data']
+    
+    # Пробуем получить ticket с повторными попытками
+    for attempt in range(5):
+        try:
+            result = pve_api_request('POST', endpoint)
+            if result and 'data' in result:
+                return result['data']
+        except Exception as e:
+            app.logger.warning(f"Attempt {attempt+1} to get console ticket failed: {e}")
+            if attempt < 4:
+                time.sleep(2)
+    
     return None
 
 def get_pve_templates(node=None):
@@ -653,8 +681,9 @@ def request_terminal(course_id):
         flash('Не удалось запустить рабочее место после нескольких попыток.', 'error')
         return redirect(url_for('view_course', course_id=course_id))
     
-    # Дополнительная пауза после запуска для инициализации сети
-    time.sleep(3)
+    # Увеличенная пауза после запуска для полной инициализации контейнера и консоли
+    app.logger.info(f"Container {new_vm_id} started. Waiting for console initialization...")
+    time.sleep(15)  # Ждем 15 секунд для полной загрузки служб внутри контейнера
     
     # Создаем запись в таблице containers для нового контейнера
     cursor.execute("""
