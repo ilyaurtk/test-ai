@@ -32,7 +32,7 @@ PVE_PASSWORD = os.getenv('PVE_PASSWORD', '')
 PVE_NODE = os.getenv('PVE_NODE', 'pve')
 PVE_VERIFY_SSL = os.getenv('PVE_VERIFY_SSL', 'false').lower() == 'true'
 
-def save_pve_config(host, port, user, password, node, verify_ssl):
+def save_pve_config_db(host, port, user, password, node, verify_ssl):
     """Сохранить конфигурацию Proxmox в базу данных"""
     conn = get_db()
     cursor = conn.cursor()
@@ -59,6 +59,18 @@ def load_pve_config():
     """Загрузить конфигурацию Proxmox из базы данных"""
     conn = get_db()
     cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS pve_config (
+            id INTEGER PRIMARY KEY,
+            host TEXT,
+            port INTEGER,
+            user TEXT,
+            password TEXT,
+            node TEXT,
+            verify_ssl INTEGER
+        )
+    ''')
+    conn.commit()
     cursor.execute('SELECT * FROM pve_config WHERE id = 1')
     row = cursor.fetchone()
     conn.close()
@@ -657,7 +669,7 @@ def admin_dashboard():
 
 @app.route('/admin/save_pve_config', methods=['POST'])
 @admin_required
-def save_pve_config_route():
+def save_pve_config():
     host = request.form.get('host', '192.168.1.100')
     port = int(request.form.get('port', 8006))
     user = request.form.get('user', 'root@pam')
@@ -665,7 +677,7 @@ def save_pve_config_route():
     node = request.form.get('node', 'pve')
     verify_ssl = request.form.get('verify_ssl', 'false').lower() == 'true'
     
-    save_pve_config(host, port, user, password, node, verify_ssl)
+    save_pve_config_db(host, port, user, password, node, verify_ssl)
     flash('Конфигурация Proxmox сохранена', 'success')
     return redirect(url_for('admin_dashboard'))
 
