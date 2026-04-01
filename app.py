@@ -691,6 +691,7 @@ def view_course(course_id):
 @app.route('/request_terminal/<int:course_id>', methods=['POST'])
 @login_required
 def request_terminal(course_id):
+    """HTTP endpoint для запроса рабочего места. Возвращает session_token для подключения."""
     conn = get_db()
     cursor = conn.cursor()
     
@@ -698,9 +699,8 @@ def request_terminal(course_id):
     course = cursor.fetchone()
     
     if not course or not course['template_vm_id']:
-        flash('Для этого курса не настроено рабочее место', 'error')
         conn.close()
-        return redirect(url_for('view_course', course_id=course_id))
+        return jsonify({'error': 'Для этого курса не настроено рабочее место'}), 400
     
     # Проверяем, есть ли уже активная сессия у пользователя для этого курса
     cursor.execute("""
@@ -714,8 +714,11 @@ def request_terminal(course_id):
     
     if existing_session:
         conn.close()
-        flash('У вас уже есть активная сессия для этого курса', 'info')
-        return redirect(url_for('terminal', session_token=existing_session['session_token']))
+        return jsonify({
+            'session_token': existing_session['session_token'],
+            'existing': True,
+            'message': 'У вас уже есть активная сессия для этого курса'
+        })
     
     # Получаем шаблон контейнера из Proxmox
     template_vm_id = course['template_vm_id']
@@ -738,8 +741,7 @@ def request_terminal(course_id):
     app.logger.info(f"Cloning template {template_vm_id} to {new_vm_id}...")
     if not clone_container(template_vm_id, new_vm_id, container_name, node):
         conn.close()
-        flash('Не удалось создать рабочее место. Проверьте подключение к Proxmox.', 'error')
-        return redirect(url_for('view_course', course_id=course_id))
+        return jsonify({'error': 'Не удалось создать рабочее место. Проверьте подключение к Proxmox.'}), 500
     
     # Ждем пока контейнер будет создан и готов к запуску
     import time
@@ -772,14 +774,11 @@ def request_terminal(course_id):
     
     if not started:
         conn.close()
-        flash('Не удалось запустить рабочее место после нескольких попыток.', 'error')
-        return redirect(url_for('view_course', course_id=course_id))
+        return jsonify({'error': 'Не удалось запустить рабочее место после нескольких попыток.'}), 500
     
     # Увеличенная пауза после запуска для полной инициализации контейнера и консоли
     app.logger.info(f"Container {new_vm_id} started. Waiting for console initialization...")
     time.sleep(15)  # Ждем 15 секунд для полной загрузки служб внутри контейнера
-    
-    # Получаем IP адрес
     
     # Создаем запись в таблице containers для нового контейнера
     cursor.execute("""
@@ -805,8 +804,13 @@ def request_terminal(course_id):
     conn.commit()
     conn.close()
     
-    flash('Рабочее место создано и запущено!', 'success')
-    return redirect(url_for('terminal', session_token=session_token))
+    return jsonify({
+        'session_token': session_token,
+        'success': True,
+        'message': 'Рабочее место создано и запущено!',
+        'vm_id': new_vm_id,
+        'node': node
+    })
 
 @app.route('/terminal/<session_token>')
 @login_required
