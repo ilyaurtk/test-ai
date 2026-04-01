@@ -5,6 +5,140 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ course.title }} - IT Courses</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <!-- Подключаем Socket.IO -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <!-- Подключаем xterm.js -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js"></script>
+    <style>
+        .course-layout {
+            display: flex;
+            height: calc(100vh - 60px);
+        }
+        .task-panel {
+            width: 50%;
+            padding: 20px;
+            overflow-y: auto;
+            border-right: 1px solid #ddd;
+        }
+        .terminal-panel {
+            width: 50%;
+            display: flex;
+            flex-direction: column;
+            background: #000;
+        }
+        .terminal-header {
+            background: #0a1f0a;
+            padding: 15px 20px;
+            border-bottom: 2px solid #00ff41;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .terminal-header h2 {
+            margin: 0;
+            color: #00ff41;
+            font-size: 18px;
+        }
+        .terminal-body {
+            flex: 1;
+            background: #000;
+            padding: 10px;
+            overflow: hidden;
+            position: relative;
+        }
+        #terminal {
+            width: 100%;
+            height: 100%;
+        }
+        .terminal-info {
+            padding: 20px;
+            color: #00ff41;
+        }
+        .terminal-info h3 {
+            color: #00ff41;
+            margin-top: 0;
+        }
+        .warning {
+            color: #ffaa00;
+        }
+        /* Progress overlay */
+        .progress-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.9);
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+        .progress-container {
+            background: #0a1f0a;
+            border: 2px solid #00ff41;
+            border-radius: 10px;
+            padding: 30px;
+            width: 80%;
+            max-width: 500px;
+        }
+        .progress-bar {
+            background: #000;
+            height: 30px;
+            border-radius: 5px;
+            overflow: hidden;
+            margin-top: 15px;
+        }
+        .progress-fill {
+            background: linear-gradient(90deg, #00ff41, #00cc33);
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        .progress-message {
+            color: #00ff41;
+            font-size: 16px;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        .progress-text {
+            color: #00ff41;
+            font-size: 14px;
+            text-align: center;
+            margin-top: 10px;
+        }
+        .connection-status {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-connected {
+            background: #00ff41;
+            box-shadow: 0 0 10px #00ff41;
+        }
+        .status-disconnected {
+            background: #ff4444;
+            box-shadow: 0 0 10px #ff4444;
+        }
+        .status-connecting {
+            background: #ffaa00;
+            box-shadow: 0 0 10px #ffaa00;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .hidden-terminal {
+            display: none;
+        }
+    </style>
 </head>
 <body>
     <nav class="navbar">
@@ -30,8 +164,8 @@
 
             <div class="progress-section">
                 <h3>Прогресс: {{ progress_percent }}%</h3>
-                <div class="progress-bar">
-                    <div class="progress-fill" style="width: {{ progress_percent }}%"></div>
+                <div class="progress-bar" style="background: #ddd; height: 20px; border-radius: 3px;">
+                    <div class="progress-fill" style="width: {{ progress_percent }}%; background: #4CAF50;"></div>
                 </div>
             </div>
 
@@ -65,31 +199,285 @@
 
         <div class="terminal-panel">
             <div class="terminal-header">
-                <h2>Рабочее место</h2>
+                <h2><span id="connectionStatus" class="connection-status status-disconnected"></span>Рабочее место</h2>
                 {% if active_session %}
-                <a href="{{ url_for('terminal', session_token=active_session.session_token) }}" class="btn btn-primary">Открыть терминал</a>
+                <button id="openTerminalBtn" class="btn btn-primary" onclick="showTerminal()">Открыть терминал</button>
                 {% else %}
-                <form action="{{ url_for('request_terminal', course_id=course.id) }}" method="POST">
-                    <button type="submit" class="btn btn-primary btn-large">
-                        <span class="icon">⚡</span> Запросить рабочее место
-                    </button>
-                </form>
+                <button id="requestWorkspaceBtn" class="btn btn-primary" onclick="requestWorkspace()">
+                    <span class="icon">⚡</span> Запросить рабочее место
+                </button>
                 {% endif %}
             </div>
             
-            <div class="terminal-info">
-                <h3>Информация о рабочем месте</h3>
-                {% if course.template_vm_id %}
-                <p>Для этого курса настроено рабочее место на основе шаблона Proxmox VE.</p>
-                <p>Нажмите «Запросить рабочее место» для запуска вашей персональной среды.</p>
+            <div class="terminal-body" id="terminalBody">
+                <div id="progressOverlay" class="progress-overlay">
+                    <div class="progress-container">
+                        <div class="progress-message" id="progressMessage">Инициализация рабочего места...</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                        <div class="progress-text" id="progressText">0%</div>
+                    </div>
+                </div>
+                
+                {% if active_session %}
+                <div id="terminalContainer" class="hidden-terminal">
+                    <div id="terminal"></div>
+                </div>
+                <div id="placeholderInfo" class="terminal-info">
+                    <h3>Информация о рабочем месте</h3>
+                    <p>У вас есть активная сессия для этого курса.</p>
+                    <p>Нажмите «Открыть терминал» для подключения.</p>
+                </div>
                 {% else %}
-                <p class="warning">Для этого курса не настроено рабочее место.</p>
+                <div id="placeholderInfo" class="terminal-info">
+                    <h3>Информация о рабочем месте</h3>
+                    {% if course.template_vm_id %}
+                    <p>Для этого курса настроено рабочее место на основе шаблона Proxmox VE.</p>
+                    <p>Нажмите «Запросить рабочее место» для запуска вашей персональной среды.</p>
+                    {% else %}
+                    <p class="warning">Для этого курса не настроено рабочее место.</p>
+                    {% endif %}
+                </div>
                 {% endif %}
             </div>
         </div>
     </div>
 
     <script>
+        const courseId = {{ course.id }};
+        {% if active_session %}
+        const existingSessionToken = '{{ active_session.session_token }}';
+        const existingVmId = {{ active_session.pve_vm_id }};
+        const existingNode = '{{ active_session.pve_node }}';
+        {% else %}
+        let existingSessionToken = null;
+        {% endif %}
+        
+        let term = null;
+        let fitAddon = null;
+        let socket = null;
+        let currentSessionToken = null;
+        let isConnected = false;
+
+        // Обновляем статус подключения
+        function updateStatus(status) {
+            const statusEl = document.getElementById('connectionStatus');
+            statusEl.classList.remove('status-connected', 'status-disconnected', 'status-connecting');
+
+            switch(status) {
+                case 'connected':
+                    statusEl.classList.add('status-connected');
+                    isConnected = true;
+                    break;
+                case 'disconnected':
+                    statusEl.classList.add('status-disconnected');
+                    isConnected = false;
+                    break;
+                case 'connecting':
+                    statusEl.classList.add('status-connecting');
+                    isConnected = false;
+                    break;
+            }
+        }
+
+        // Показать терминал
+        function showTerminal() {
+            document.getElementById('placeholderInfo').style.display = 'none';
+            document.getElementById('terminalContainer').classList.remove('hidden-terminal');
+            if (!term) {
+                initTerminal(existingSessionToken, existingVmId, existingNode);
+            }
+            setTimeout(() => {
+                if (fitAddon) fitAddon.fit();
+            }, 100);
+        }
+
+        // Запрос рабочего места
+        async function requestWorkspace() {
+            const btn = document.getElementById('requestWorkspaceBtn');
+            const progressOverlay = document.getElementById('progressOverlay');
+            const progressMessage = document.getElementById('progressMessage');
+            const progressFill = document.getElementById('progressFill');
+            const progressText = document.getElementById('progressText');
+            
+            btn.disabled = true;
+            btn.innerHTML = '<span class="icon">⏳</span> Создание...';
+            progressOverlay.style.display = 'flex';
+            
+            let progressStep = 0;
+            const totalSteps = 5;
+            
+            function updateProgress(message, step) {
+                progressMessage.textContent = message;
+                const percentage = Math.round((step / totalSteps) * 100);
+                progressFill.style.width = percentage + '%';
+                progressText.textContent = percentage + '%';
+            }
+            
+            try {
+                updateProgress('Клонирование контейнера...', 1);
+                
+                const response = await fetch(`/request_terminal/${courseId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Ошибка создания рабочего места');
+                }
+                
+                updateProgress('Запуск контейнера...', 2);
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
+                updateProgress('Инициализация консоли...', 3);
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
+                updateProgress('Подключение к терминалу...', 4);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                updateProgress('Готово!', 5);
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                progressOverlay.style.display = 'none';
+                
+                // Сохраняем данные сессии
+                currentSessionToken = data.session_token;
+                
+                // Скрываем placeholder и показываем терминал
+                document.getElementById('placeholderInfo').style.display = 'none';
+                document.getElementById('terminalContainer').classList.remove('hidden-terminal');
+                
+                // Обновляем кнопку
+                btn.style.display = 'none';
+                
+                // Инициализируем терминал
+                initTerminal(data.session_token, data.vm_id, data.node);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                progressMessage.textContent = 'Ошибка: ' + error.message;
+                progressMessage.style.color = '#ff4444';
+                btn.disabled = false;
+                btn.innerHTML = '<span class="icon">⚡</span> Запросить рабочее место';
+                
+                setTimeout(() => {
+                    progressOverlay.style.display = 'none';
+                }, 3000);
+            }
+        }
+
+        // Инициализация терминала
+        function initTerminal(sessionToken, vmId, node) {
+            updateStatus('connecting');
+            
+            try {
+                // Создаем экземпляр xterm.js
+                term = new Terminal({
+                    cursorBlink: true,
+                    fontSize: 14,
+                    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+                    theme: {
+                        background: '#000000',
+                        foreground: '#00ff41',
+                        cursor: '#00ff41',
+                        cursorAccent: '#000000',
+                        selection: 'rgba(0, 255, 65, 0.3)',
+                        black: '#000000',
+                        red: '#ff4444',
+                        green: '#00ff41',
+                        yellow: '#ffaa00',
+                        blue: '#0066ff',
+                        magenta: '#ff00ff',
+                        cyan: '#00ffff',
+                        white: '#ffffff'
+                    }
+                });
+
+                // Добавляем аддоны
+                fitAddon = new FitAddon.FitAddon();
+                const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+                term.loadAddon(fitAddon);
+                term.loadAddon(webLinksAddon);
+
+                // Открываем терминал в DOM
+                term.open(document.getElementById('terminal'));
+                fitAddon.fit();
+
+                // Обработка изменения размера окна
+                window.addEventListener('resize', () => {
+                    fitAddon.fit();
+                    if (socket && socket.connected) {
+                        socket.emit('terminal_resize', {
+                            session_token: currentSessionToken || sessionToken,
+                            cols: term.cols,
+                            rows: term.rows
+                        });
+                    }
+                });
+
+                // Подключаемся к Socket.IO серверу
+                socket = io();
+
+                socket.on('connect', () => {
+                    console.log('Connected to Socket.IO server');
+                    // Инициализируем терминальную сессию
+                    socket.emit('terminal_init', { session_token: sessionToken });
+                });
+
+                socket.on('terminal_output', (data) => {
+                    if (data.output) {
+                        term.write(data.output);
+                        updateStatus('connected');
+                    }
+                    if (data.error) {
+                        console.error('Terminal error:', data.error);
+                        term.write(`\\r\\n\\x1b[31mОшибка: ${data.error}\\x1b[0m\\r\\n`);
+                        updateStatus('disconnected');
+                    }
+                });
+
+                socket.on('disconnect', () => {
+                    console.log('Disconnected from Socket.IO server');
+                    updateStatus('disconnected');
+                });
+
+                socket.on('connect_error', (error) => {
+                    console.error('Socket.IO connection error:', error);
+                    updateStatus('disconnected');
+                });
+
+                // Обработка завершения сессии
+                socket.on('session_finished', (data) => {
+                    console.log('Session finished:', data.message);
+                    updateStatus('disconnected');
+                    if (term) {
+                        term.write('\\r\\n\\r\\n\\x1b[31m=== СЕССИЯ ЗАВЕРШЕНА ===\\x1b[0m\\r\\n');
+                        term.write('\\x1b[31mКонтейнер был удален. Для продолжения работы создайте новую сессию.\\x1b[0m\\r\\n');
+                    }
+                });
+
+                // Обработка ввода пользователя
+                term.onData((data) => {
+                    if (socket && socket.connected) {
+                        socket.emit('terminal_input', {
+                            session_token: sessionToken,
+                            command: data
+                        });
+                    }
+                });
+
+            } catch (error) {
+                console.error('Error initializing terminal:', error);
+                updateStatus('disconnected');
+            }
+        }
+
+        // Task checkboxes
         document.querySelectorAll('.task-checkbox').forEach(checkbox => {
             checkbox.addEventListener('change', function() {
                 const taskId = this.dataset.task;
@@ -111,6 +499,11 @@
                 });
             });
         });
+
+        // Если уже есть активная сессия, можно сразу показать терминал по клику
+        {% if active_session %}
+        console.log('Active session found:', existingSessionToken);
+        {% endif %}
     </script>
 </body>
 </html>
