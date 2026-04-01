@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import requests
+import urllib.parse
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, send_from_directory
 from functools import wraps
 from werkzeug.utils import secure_filename
@@ -361,6 +362,18 @@ def get_vnc_proxy_url(vm_id, node=None):
     """Получить URL для VNC прокси сессии через Proxmox API"""
     if node is None:
         node = get_pve_node()
+    
+    # Загружаем конфигурацию для получения host и verify_ssl
+    config = load_pve_config()
+    if config:
+        host = config['host']
+        port = config['port']
+        verify_ssl = config['verify_ssl']
+    else:
+        host = PVE_HOST
+        port = PVE_PORT
+        verify_ssl = PVE_VERIFY_SSL
+    
     endpoint = f"nodes/{node}/lxc/{vm_id}/proxy/vncwebsocket"
     data = {
         'port': 5900,
@@ -368,7 +381,24 @@ def get_vnc_proxy_url(vm_id, node=None):
     }
     result = pve_api_request('POST', endpoint, data)
     if result and 'data' in result:
-        return result['data']
+        # Формируем полный WebSocket URL для noVNC
+        ticket = result['data'].get('ticket', '')
+        vnc_port = result['data'].get('port', 5900)
+        
+        # Для LXC контейнеров Proxmox использует termproxy вместо прямого VNC
+        # Получаем termproxy ticket
+        console_result = get_container_console_ticket(vm_id, node)
+        if console_result:
+            term_port = console_result.get('port', port)
+            term_ticket = console_result.get('ticket', '')
+            # Формируем WebSocket URL для termproxy
+            protocol = 'wss' if not verify_ssl or port == 443 else 'ws'
+            return f"{protocol}://{host}:{term_port}/term?ticket={urllib.parse.quote(term_ticket)}"
+        
+        # Fallback к стандартному VNC
+        protocol = 'wss' if not verify_ssl or port == 443 else 'ws'
+        return f"{protocol}://{host}:{vnc_port}?ticket={urllib.parse.quote(ticket)}"
+    
     return None
 
 def get_container_console_ticket(vm_id, node=None):
@@ -734,15 +764,15 @@ def terminal(session_token):
         flash('Сессия не найдена', 'error')
         return redirect(url_for('student_dashboard'))
     
-    # Получаем билет для доступа к консоли через Proxmox
-    console_ticket = get_container_console_ticket(session_data['pve_vm_id'], session_data['pve_node'])
+    # Получаем URL для VNC прокси сессии через Proxmox API
+    vnc_proxy_url = get_vnc_proxy_url(session_data['pve_vm_id'], session_data['pve_node'])
     
     return render_template('terminal.html', 
                          session_data=session_data, 
                          session_token=session_token,
                          PVE_HOST=PVE_HOST, 
                          PVE_PORT=PVE_PORT,
-                         console_ticket=console_ticket)
+                         vnc_proxy_url=vnc_proxy_url)
 
 @app.route('/api/terminal/<session_token>/exec', methods=['POST'])
 @login_required
