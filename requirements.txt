@@ -6,3 +6,4 @@ python-engineio>=4.0.0
 python-socketio>=5.0.0
 websockets>=10.0
 Werkzeug>=2.0.0
+paramiko>=3.0.0
