@@ -374,53 +374,42 @@ def get_vnc_proxy_url(vm_id, node=None):
         port = PVE_PORT
         verify_ssl = PVE_VERIFY_SSL
     
-    # Для LXC контейнеров используем только termproxy
+    # Для LXC контейнеров используем termproxy API
     console_result = get_container_console_ticket(vm_id, node)
     if console_result:
         term_port = console_result.get('port', port)
         term_ticket = console_result.get('ticket', '')
         # Формируем WebSocket URL для termproxy
         protocol = 'wss' if verify_ssl else 'ws'
-        return f"{protocol}://{host}:{term_port}/term?ticket={urllib.parse.quote(term_ticket)}"
+        # Proxmox termproxy endpoint использует /termproxy вместо /term
+        return f"{protocol}://{host}:{term_port}/termproxy?ticket={urllib.parse.quote(term_ticket)}"
     
     return None
 
 def get_container_console_ticket(vm_id, node=None):
-    """Получить билет для доступа к консоли контейнера через termius/xterm.js"""
+    """Получить билет для доступа к консоли контейнера через termproxy/xterm.js"""
     if node is None:
         node = get_pve_node()
-    
-    # Ждем появления сокета консоли перед запросом ticket
-    import time
-    import os
-    console_socket = f"/var/lib/lxc/{vm_id}/console"
-    
-    # Проверяем наличие сокета на сервере Proxmox (предполагаем, что это тот же сервер)
-    # Если сокета нет, ждем его появления до 30 секунд
-    socket_wait = 0
-    while socket_wait < 30:
-        if os.path.exists(console_socket):
-            break
-        time.sleep(1)
-        socket_wait += 1
-    
-    # Дополнительная пауза после появления сокета
-    if os.path.exists(console_socket):
-        time.sleep(2)
     
     endpoint = f"nodes/{node}/lxc/{vm_id}/termproxy"
     
     # Пробуем получить ticket с повторными попытками
+    import time
     for attempt in range(5):
         try:
             result = pve_api_request('POST', endpoint)
             if result and 'data' in result:
+                app.logger.info(f"Successfully got console ticket for VM {vm_id}")
                 return result['data']
+            else:
+                app.logger.warning(f"Attempt {attempt+1} to get console ticket returned no data")
         except Exception as e:
             app.logger.warning(f"Attempt {attempt+1} to get console ticket failed: {e}")
-            if attempt < 4:
-                time.sleep(2)
+        
+        if attempt < 4:
+            time.sleep(2)
     
+    app.logger.error(f"Failed to get console ticket for VM {vm_id} after all attempts")
     return None
 
 def get_pve_templates(node=None):
