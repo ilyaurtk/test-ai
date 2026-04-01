@@ -1122,20 +1122,55 @@ def handle_connect():
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    """Обработка отключения клиента - закрытие SSH соединения"""
+    """Обработка отключения клиента - закрытие SSH соединения и удаление контейнера"""
     app.logger.info(f'Клиент отключился: {flask_request.sid}')
     
-    # Закрываем SSH соединение если оно есть
     sid = flask_request.sid
+    
+    # Получаем информацию о сессии для удаления контейнера
+    vm_id = None
+    node = None
+    session_token = None
+    
     if sid in ssh_connections:
+        ssh_info = ssh_connections[sid]
+        vm_id = ssh_info.get('vm_id')
+        session_token = ssh_info.get('session_token')
+        
+        # Закрываем SSH соединение
         try:
-            ssh_info = ssh_connections[sid]
             if 'client' in ssh_info and ssh_info['client']:
                 ssh_info['client'].close()
             del ssh_connections[sid]
             app.logger.info(f'SSH connection closed for {sid}')
         except Exception as e:
             app.logger.error(f'Error closing SSH connection: {e}')
+    
+    # Если есть VM ID, останавливаем и удаляем контейнер
+    if vm_id:
+        try:
+            app.logger.info(f'Stopping and deleting container VM {vm_id} on node {node}')
+            stop_container(vm_id, node)
+            delete_container(vm_id, node)
+            app.logger.info(f'Container VM {vm_id} stopped and deleted successfully')
+        except Exception as e:
+            app.logger.error(f'Error stopping/deleting container VM {vm_id}: {e}')
+    
+    # Обновляем статус сессии в БД если есть session_token
+    if session_token:
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE terminal_sessions 
+                SET status = 'closed', ended_at = CURRENT_TIMESTAMP 
+                WHERE session_token = ?
+            """, (session_token,))
+            conn.commit()
+            conn.close()
+            app.logger.info(f'Terminal session {session_token} marked as closed')
+        except Exception as e:
+            app.logger.error(f'Error updating terminal session status: {e}')
 
 @socketio.on('terminal_init')
 def handle_terminal_init(data):
