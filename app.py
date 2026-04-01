@@ -20,8 +20,13 @@ import socket
 import paramiko
 from paramiko import SSHClient, AutoAddPolicy
 
+import time
+
 # Отключаем предупреждения о самоподписанных SSL сертификатах
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Константа задержки между остановкой и удалением контейнера (секунды)
+STOP_TIMEOUT = 5
 
 app = Flask(__name__)
 app.secret_key = 'it_courses_secret_key_2024'
@@ -1150,7 +1155,16 @@ def handle_disconnect():
     if vm_id:
         try:
             app.logger.info(f'Stopping and deleting container VM {vm_id} on node {node}')
+            # Сначала останавливаем контейнер
+            app.logger.info(f'Stopping container {vm_id}...')
             stop_container(vm_id, node)
+            
+            # Ждем пока контейнер полностью остановится
+            app.logger.info(f'Waiting {STOP_TIMEOUT} seconds for container to stop...')
+            time.sleep(STOP_TIMEOUT)
+            
+            # Теперь удаляем
+            app.logger.info(f'Deleting container {vm_id}...')
             delete_container(vm_id, node)
             app.logger.info(f'Container VM {vm_id} stopped and deleted successfully')
         except Exception as e:
