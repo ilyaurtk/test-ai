@@ -73,6 +73,32 @@
             text-align: center;
             padding: 20px;
         }
+        .progress-container {
+            background: #0a1f0a;
+            border: 2px solid #00ff41;
+            border-radius: 5px;
+            padding: 20px;
+            margin: 20px;
+            display: none;
+        }
+        .progress-bar {
+            background: #000;
+            height: 30px;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        .progress-fill {
+            background: linear-gradient(90deg, #00ff41, #00cc33);
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        .progress-text {
+            color: #00ff41;
+            font-size: 14px;
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
@@ -89,6 +115,13 @@
         </div>
 
         <div class="terminal-body">
+            <div id="progress-container" class="progress-container">
+                <div style="text-align: center; color: #00ff41; font-size: 16px;" id="progress-message">Инициализация...</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <div class="progress-text" id="progress-text" style="text-align: center;">0%</div>
+            </div>
             <div id="terminal"></div>
             <div id="loading" class="loading-message" style="display: none;">Подключение к терминалу...</div>
         </div>
@@ -183,6 +216,22 @@
                 // Подключаемся к Socket.IO серверу
                 socket = io();
 
+                // Обработка прогресса создания контейнера
+                socket.on('progress', (data) => {
+                    console.log('Progress:', data);
+                    const progressContainer = document.getElementById('progress-container');
+                    const progressFill = document.getElementById('progress-fill');
+                    const progressText = document.getElementById('progress-text');
+                    const progressMessage = document.getElementById('progress-message');
+                    
+                    progressContainer.style.display = 'block';
+                    progressMessage.textContent = data.message;
+                    
+                    const percentage = Math.round((data.step / data.total) * 100);
+                    progressFill.style.width = percentage + '%';
+                    progressText.textContent = percentage + '%';
+                });
+
                 socket.on('connect', () => {
                     console.log('Connected to Socket.IO server');
                     // Инициализируем терминальную сессию
@@ -212,6 +261,20 @@
                     console.error('Socket.IO connection error:', error);
                     document.getElementById('loading').innerHTML = `<span style="color: #ff4444;\">Ошибка подключения: ${error.message}</span>`;
                     updateStatus('disconnected');
+                });
+
+                // Обработка завершения сессии
+                socket.on('session_finished', (data) => {
+                    console.log('Session finished:', data.message);
+                    updateStatus('disconnected');
+                    document.getElementById('loading').innerHTML = '<span style="color: #ff4444;">Сессия завершена. Повторный вход невозможен.</span>';
+                    document.getElementById('loading').style.display = 'block';
+                    // Блокируем терминал
+                    if (term) {
+                        term.write('\r\n\r\n\x1b[31m=== СЕССИЯ ЗАВЕРШЕНА ===\x1b[0m\r\n');
+                        term.write('\x1b[31mКонтейнер был удален. Для продолжения работы создайте новую сессию.\x1b[0m\r\n');
+                        term.write('\x1b[31mПерезагрузите страницу или вернитесь к курсу.\x1b[0m\r\n');
+                    }
                 });
 
                 // Обработка ввода пользователя
