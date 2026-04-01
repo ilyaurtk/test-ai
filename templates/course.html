@@ -224,7 +224,7 @@
                 <div id="terminalContainer" class="hidden-terminal">
                     <div id="terminal"></div>
                 </div>
-                <div id="placeholderInfo" class="terminal-info">
+                <div id="placeholderInfo" class="terminal-info" style="display: none;">
                     <h3>Информация о рабочем месте</h3>
                     <p>У вас есть активная сессия для этого курса.</p>
                     <p>Нажмите «Открыть терминал» для подключения.</p>
@@ -283,16 +283,30 @@
 
         // Показать терминал
         function showTerminal() {
-            document.getElementById('placeholderInfo').style.display = 'none';
-            document.getElementById('terminalContainer').classList.remove('hidden-terminal');
+            console.log('showTerminal called, term exists:', !!term);
+            const placeholder = document.getElementById('placeholderInfo');
+            const terminalContainer = document.getElementById('terminalContainer');
+            
+            if (placeholder) placeholder.style.display = 'none';
+            if (terminalContainer) {
+                terminalContainer.classList.remove('hidden-terminal');
+                console.log('Terminal container shown');
+            }
+            
             if (!term) {
+                console.log('Initializing new terminal...');
                 initTerminal(currentSessionToken || existingSessionToken, 
                              window.currentVmId || existingVmId, 
                              window.currentNode || existingNode);
+            } else {
+                console.log('Terminal already exists, fitting...');
+                setTimeout(() => {
+                    if (fitAddon) {
+                        fitAddon.fit();
+                        console.log('Terminal fitted');
+                    }
+                }, 100);
             }
-            setTimeout(() => {
-                if (fitAddon) fitAddon.fit();
-            }, 100);
         }
 
         // Запрос рабочего места
@@ -352,10 +366,6 @@
                 window.currentVmId = data.vm_id;
                 window.currentNode = data.node;
                 
-                // Скрываем placeholder и показываем терминал
-                document.getElementById('placeholderInfo').style.display = 'none';
-                document.getElementById('terminalContainer').classList.remove('hidden-terminal');
-                
                 // Обновляем кнопку - скрываем кнопку запроса и показываем кнопку открытия
                 btn.style.display = 'none';
                 const openBtn = document.createElement('button');
@@ -365,8 +375,25 @@
                 openBtn.onclick = showTerminal;
                 document.querySelector('.terminal-header').appendChild(openBtn);
                 
-                // Инициализируем терминал
-                initTerminal(data.session_token, data.vm_id, data.node);
+                // Сначала скрываем placeholder и показываем контейнер терминала
+                document.getElementById('placeholderInfo').style.display = 'none';
+                document.getElementById('terminalContainer').classList.remove('hidden-terminal');
+                
+                // Даем DOM время обновиться перед инициализацией терминала
+                setTimeout(() => {
+                    try {
+                        // Инициализируем терминал
+                        initTerminal(data.session_token, data.vm_id, data.node);
+                        // Сразу открываем терминал
+                        showTerminal();
+                        console.log('Terminal initialization completed');
+                    } catch (initError) {
+                        console.error('Error during terminal initialization:', initError);
+                        progressOverlay.style.display = 'flex';
+                        progressMessage.textContent = 'Ошибка инициализации терминала: ' + initError.message;
+                        progressMessage.style.color = '#ff4444';
+                    }
+                }, 500);
                 
             } catch (error) {
                 console.error('Error:', error);
@@ -409,18 +436,26 @@
                 });
 
                 // Добавляем аддоны
-                fitAddon = new FitAddon.FitAddon();
-                const webLinksAddon = new WebLinksAddon.WebLinksAddon();
-                term.loadAddon(fitAddon);
-                term.loadAddon(webLinksAddon);
+                if (typeof FitAddon !== 'undefined') {
+                    fitAddon = new FitAddon.FitAddon();
+                    term.loadAddon(fitAddon);
+                }
+                if (typeof WebLinksAddon !== 'undefined') {
+                    const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+                    term.loadAddon(webLinksAddon);
+                }
 
                 // Открываем терминал в DOM
                 term.open(document.getElementById('terminal'));
-                fitAddon.fit();
+                if (fitAddon) {
+                    setTimeout(() => fitAddon.fit(), 100);
+                }
 
                 // Обработка изменения размера окна
                 window.addEventListener('resize', () => {
-                    fitAddon.fit();
+                    if (fitAddon) {
+                        fitAddon.fit();
+                    }
                     if (socket && socket.connected) {
                         socket.emit('terminal_resize', {
                             session_token: currentSessionToken || sessionToken,
