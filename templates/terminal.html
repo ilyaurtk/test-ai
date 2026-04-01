@@ -10,6 +10,8 @@
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js"></script>
+    <!-- Подключаем Socket.IO -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         .terminal-container {
             height: calc(100vh - 60px);
@@ -91,7 +93,7 @@
             <div id="loading" class="loading-message" style="display: none;">Подключение к терминалу...</div>
         </div>
         <div class="terminal-info-bar">
-            ⚠️ Терминал подключён к контейнеру Proxmox VE (VM {{ session_data.pve_vm_id }}). Все изменения сохраняются в изолированной среде.
+            ⚠️ Терминал подключён к контейнеру Proxmox VE (VM {{ session_data.pve_vm_id }}) через SSH. Все изменения сохраняются в изолированной среде.
         </div>
     </div>
 
@@ -99,7 +101,7 @@
         // Получаем данные из шаблона
         const vmId = {{ session_data.pve_vm_id }};
         const node = '{{ session_data.pve_node }}';
-        const vncProxyUrl = '{{ vnc_proxy_url|safe }}';
+        const sessionToken = '{{ session_token }}';
 
         let term = null;
         let fitAddon = null;
@@ -132,12 +134,6 @@
         function initTerminal() {
             updateStatus('connecting');
             document.getElementById('loading').style.display = 'block';
-
-            if (!vncProxyUrl) {
-                document.getElementById('loading').innerHTML = '<span style="color: #ff4444;">Ошибка: не удалось получить URL терминала</span>';
-                updateStatus('disconnected');
-                return;
-            }
 
             try {
                 // Создаем экземпляр xterm.js
@@ -172,96 +168,65 @@
                 term.open(document.getElementById('terminal'));
                 fitAddon.fit();
 
-                // Обработка изменения размера окна - отправляем ANSI escape sequence
+                // Обработка изменения размера окна
                 window.addEventListener('resize', () => {
                     fitAddon.fit();
-                    if (socket && socket.readyState === WebSocket.OPEN) {
-                        // Отправляем размер терминала через ANSI escape sequence
-                        const resizeCmd = `\x1b[8;${term.rows};${term.cols}t`;
-                        socket.send(resizeCmd);
+                    if (socket && socket.connected) {
+                        socket.emit('terminal_resize', {
+                            session_token: sessionToken,
+                            cols: term.cols,
+                            rows: term.rows
+                        });
                     }
                 });
 
-                // Подключаемся к WebSocket
-                connectWebSocket(vncProxyUrl);
+                // Подключаемся к Socket.IO серверу
+                socket = io();
+
+                socket.on('connect', () => {
+                    console.log('Connected to Socket.IO server');
+                    // Инициализируем терминальную сессию
+                    socket.emit('terminal_init', { session_token: sessionToken });
+                });
+
+                socket.on('terminal_output', (data) => {
+                    if (data.output) {
+                        term.write(data.output);
+                        updateStatus('connected');
+                    }
+                    if (data.error) {
+                        console.error('Terminal error:', data.error);
+                        term.write(`\r\n\x1b[31mОшибка: ${data.error}\x1b[0m\r\n`);
+                        updateStatus('disconnected');
+                    }
+                });
+
+                socket.on('disconnect', () => {
+                    console.log('Disconnected from Socket.IO server');
+                    updateStatus('disconnected');
+                    document.getElementById('loading').innerHTML = '<span style="color: #ffaa00;">Отключено. Переподключение...</span>';
+                    document.getElementById('loading').style.display = 'block';
+                });
+
+                socket.on('connect_error', (error) => {
+                    console.error('Socket.IO connection error:', error);
+                    document.getElementById('loading').innerHTML = `<span style="color: #ff4444;\">Ошибка подключения: ${error.message}</span>`;
+                    updateStatus('disconnected');
+                });
+
+                // Обработка ввода пользователя
+                term.onData((data) => {
+                    if (socket && socket.connected) {
+                        socket.emit('terminal_input', {
+                            session_token: sessionToken,
+                            command: data
+                        });
+                    }
+                });
 
             } catch (error) {
                 console.error('Error initializing terminal:', error);
                 document.getElementById('loading').innerHTML = `<span style="color: #ff4444;">Ошибка инициализации: ${error.message}</span>`;
-                updateStatus('disconnected');
-            }
-        }
-
-        // Подключение к WebSocket
-        function connectWebSocket(url) {
-            try {
-                socket = new WebSocket(url);
-
-                socket.onopen = () => {
-                    console.log('Connected to terminal WebSocket');
-                    updateStatus('connected');
-                    document.getElementById('loading').innerHTML = '<span style="color: #00ff41;">✓ Подключено</span>';
-                    
-                    // Отправляем начальный размер в termproxy (сырой формат)
-                    if (fitAddon) {
-                        fitAddon.fit();
-                        // Termproxy ожидает ANSI escape sequence для изменения размера
-                        const resizeCmd = `\x1b[8;${term.rows};${term.cols}t`;
-                        socket.send(resizeCmd);
-                    }
-                };
-
-                socket.onmessage = (event) => {
-                    // Termproxy отправляет сырые данные (binary/text), а не JSON
-                    if (event.data instanceof Blob) {
-                        // Если пришли бинарные данные
-                        const reader = new FileReader();
-                        reader.onload = () => {
-                            const text = new TextDecoder().decode(reader.result);
-                            term.write(text);
-                        };
-                        reader.readAsArrayBuffer(event.data);
-                    } else if (event.data instanceof ArrayBuffer) {
-                        // Если ArrayBuffer напрямую
-                        const text = new TextDecoder().decode(event.data);
-                        term.write(text);
-                    } else {
-                        // Если текстовые данные - пишем напрямую
-                        term.write(event.data);
-                    }
-                };
-
-                socket.onerror = (error) => {
-                    console.error('WebSocket error:', error);
-                    document.getElementById('loading').innerHTML = '<span style="color: #ff4444;">Ошибка подключения</span>';
-                    updateStatus('disconnected');
-                };
-
-                socket.onclose = (event) => {
-                    console.log('WebSocket closed:', event.code, event.reason);
-                    updateStatus('disconnected');
-                    document.getElementById('loading').innerHTML = '<span style="color: #ffaa00;">Отключено. Переподключение...</span>';
-                    document.getElementById('loading').style.display = 'block';
-                    
-                    // Попытка переподключения через 3 секунды
-                    setTimeout(() => {
-                        if (!isConnected) {
-                            connectWebSocket(url);
-                        }
-                    }, 3000);
-                };
-
-                // Обработка ввода пользователя - отправляем сырые данные в termproxy
-                term.onData((data) => {
-                    if (socket && socket.readyState === WebSocket.OPEN) {
-                        // Termproxy ожидает сырые данные, а не JSON
-                        socket.send(data);
-                    }
-                });
-
-            } catch (error) {
-                console.error('Error connecting to WebSocket:', error);
-                document.getElementById('loading').innerHTML = `<span style="color: #ff4444;">Ошибка подключения: ${error.message}</span>`;
                 updateStatus('disconnected');
             }
         }
@@ -271,7 +236,7 @@
             console.log('Initializing terminal...');
             console.log('VM ID:', vmId);
             console.log('Node:', node);
-            console.log('Terminal URL:', vncProxyUrl);
+            console.log('Session Token:', sessionToken);
             initTerminal();
         });
     </script>

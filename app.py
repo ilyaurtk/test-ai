@@ -13,6 +13,12 @@ import websockets
 import json
 from flask_socketio import SocketIO, emit
 from flask import request as flask_request
+import subprocess
+import threading
+import select
+import socket
+import paramiko
+from paramiko import SSHClient, AutoAddPolicy
 
 # Отключаем предупреждения о самоподписанных SSL сертификатах
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -358,31 +364,59 @@ def get_container_status(vm_id, node=None):
         return result['data'].get('status', 'unknown')
     return 'unknown'
 
-def get_vnc_proxy_url(vm_id, node=None):
-    """Получить URL для терминала через termproxy (LXC контейнеры)"""
+def get_container_ip(vm_id, node=None):
+    """Получить IP-адрес контейнера из Proxmox"""
     if node is None:
         node = get_pve_node()
     
-    # Загружаем конфигурацию для получения host и verify_ssl
-    config = load_pve_config()
-    if config:
-        host = config['host']
-        port = config['port']
-        verify_ssl = config['verify_ssl']
-    else:
-        host = PVE_HOST
-        port = PVE_PORT
-        verify_ssl = PVE_VERIFY_SSL
+    # Получаем конфигурацию контейнера
+    endpoint = f"nodes/{node}/lxc/{vm_id}/config"
+    result = pve_api_request('GET', endpoint)
     
-    # Для LXC контейнеров используем termproxy API
-    console_result = get_container_console_ticket(vm_id, node)
-    if console_result:
-        term_port = console_result.get('port', port)
-        term_ticket = console_result.get('ticket', '')
-        # Формируем WebSocket URL для termproxy
-        protocol = 'wss' if verify_ssl else 'ws'
-        # Proxmox termproxy endpoint использует /termproxy вместо /term
-        return f"{protocol}://{host}:{term_port}/termproxy?ticket={urllib.parse.quote(term_ticket)}"
+    if result and 'data' in result:
+        config = result['data']
+        # Пробуем получить IP из net0 или других сетевых интерфейсов
+        # Формат: net0=name=eth0,bridge=vmbr0,gw=192.168.1.1,hwaddr=XX:XX:XX:XX:XX:XX,ip=192.168.1.100/24,type=veth
+        for key in config:
+            if key.startswith('net'):
+                net_config = config[key]
+                if 'ip=' in net_config:
+                    # Извлекаем IP адрес
+                    ip_part = net_config.split('ip=')[1].split(',')[0]
+                    # Убираем маску подсети
+                    ip_addr = ip_part.split('/')[0]
+                    return ip_addr
+    
+    # Если не нашли в конфиге, пробуем получить через QEMU agent (если доступен)
+    endpoint = f"nodes/{node}/lxc/{vm_id}/agent/network-get-interfaces"
+    result = pve_api_request('GET', endpoint)
+    if result and 'data' in result:
+        interfaces = result.get('data', [])
+        for iface in interfaces:
+            if iface.get('name') == 'eth0':
+                addresses = iface.get('ip-addresses', [])
+                for addr in addresses:
+                    if addr.get('ip-address-type') == 'ipv4':
+                        return addr.get('ip-address')
+    
+    return None
+
+def get_vnc_proxy_url(vm_id, node=None):
+    """Получить информацию для SSH подключения к контейнеру"""
+    if node is None:
+        node = get_pve_node()
+    
+    # Получаем IP-адрес контейнера
+    container_ip = get_container_ip(vm_id, node)
+    
+    if container_ip:
+        # Возвращаем информацию для SSH подключения
+        return {
+            'host': container_ip,
+            'port': 22,
+            'username': 'root',
+            'password': 'P@ssw0rd'
+        }
     
     return None
 
@@ -1028,6 +1062,9 @@ def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 # WebSocket обработчики для работы с терминалом Proxmox
+# Хранилище активных SSH подключений
+ssh_connections = {}
+
 @socketio.on('connect')
 def handle_connect():
     """Обработка подключения клиента к WebSocket"""
@@ -1036,55 +1073,24 @@ def handle_connect():
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    """Обработка отключения клиента - завершение сессии и удаление контейнера"""
+    """Обработка отключения клиента - закрытие SSH соединения"""
     app.logger.info(f'Клиент отключился: {flask_request.sid}')
     
-    # Получаем user_id из session (если доступен)
-    from flask import session as flask_session
-    user_id = flask_session.get('user_id')
-    
-    if user_id:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        # Получаем активные сессии пользователя
-        cursor.execute("""
-            SELECT ts.id, ts.container_id, cont.pve_vm_id, cont.pve_node
-            FROM terminal_sessions ts
-            JOIN containers cont ON ts.container_id = cont.id
-            WHERE ts.user_id = ? AND ts.status = 'active'
-            LIMIT 1
-        """, (user_id,))
-        active_session = cursor.fetchone()
-        
-        if active_session:
-            # Останавливаем и удаляем контейнер в Proxmox
-            if active_session['pve_vm_id']:
-                stop_container(active_session['pve_vm_id'], active_session['pve_node'])
-                delete_container(active_session['pve_vm_id'], active_session['pve_node'])
-            
-            # Удаляем запись о контейнере из БД
-            if active_session['container_id']:
-                cursor.execute("DELETE FROM containers WHERE id = ?", (active_session['container_id'],))
-            
-            # Обновляем статус сессии
-            cursor.execute("""
-                UPDATE terminal_sessions 
-                SET status = 'closed', ended_at = CURRENT_TIMESTAMP 
-                WHERE id = ?
-            """, (active_session['id'],))
-            
-            conn.commit()
-            print(f"Сессия пользователя {user_id} завершена, контейнер удален")
-        
-        conn.close()
-
-# Хранилище активных WebSocket подключений к консолям
-console_connections = {}
+    # Закрываем SSH соединение если оно есть
+    sid = flask_request.sid
+    if sid in ssh_connections:
+        try:
+            ssh_info = ssh_connections[sid]
+            if 'client' in ssh_info and ssh_info['client']:
+                ssh_info['client'].close()
+            del ssh_connections[sid]
+            app.logger.info(f'SSH connection closed for {sid}')
+        except Exception as e:
+            app.logger.error(f'Error closing SSH connection: {e}')
 
 @socketio.on('terminal_init')
 def handle_terminal_init(data):
-    """Инициализация сессии терминала при подключении"""
+    """Инициализация SSH сессии терминала при подключении"""
     session_token = data.get('session_token')
     
     if not session_token:
@@ -1118,159 +1124,100 @@ def handle_terminal_init(data):
         emit('terminal_output', {'error': f'Контейнер не запущен (статус: {session_data["container_status"]})'})
         return
     
-    # Получаем ticket для доступа к консоли
-    console_ticket = get_container_console_ticket(session_data['pve_vm_id'], session_data['pve_node'])
+    # Получаем информацию для SSH подключения
+    ssh_info = get_vnc_proxy_url(session_data['pve_vm_id'], session_data['pve_node'])
     
-    if not console_ticket:
-        emit('terminal_output', {'error': 'Не удалось получить доступ к консоли контейнера'})
+    if not ssh_info:
+        emit('terminal_output', {'error': 'Не удалось получить IP-адрес контейнера'})
         return
     
-    # Сохраняем информацию о сессии
-    sid = flask_request.sid
-    console_connections[sid] = {
-        'session_token': session_token,
-        'vm_id': session_data['pve_vm_id'],
-        'node': session_data['pve_node'],
-        'ticket': console_ticket.get('ticket'),
-        'vmid': session_data['pve_vm_id']
-    }
-    
-    emit('terminal_output', {'output': f'\x1b[32m✓ Сессия инициализирована для VM {session_data["pve_vm_id"]}\x1b[0m\r\n'})
+    try:
+        # Создаем SSH подключение
+        ssh_client = SSHClient()
+        ssh_client.set_missing_host_key_policy(AutoAddPolicy())
+        
+        app.logger.info(f"Connecting to SSH: {ssh_info['host']}:{ssh_info['port']} as {ssh_info['username']}")
+        
+        ssh_client.connect(
+            hostname=ssh_info['host'],
+            port=ssh_info['port'],
+            username=ssh_info['username'],
+            password=ssh_info['password'],
+            timeout=10,
+            allow_agent=False,
+            look_for_keys=False
+        )
+        
+        # Создаем интерактивную сессию
+        channel = ssh_client.invoke_shell(term='xterm-256color')
+        channel.settimeout(0)  # Неблокирующий режим
+        
+        # Сохраняем информацию о подключении
+        sid = flask_request.sid
+        ssh_connections[sid] = {
+            'session_token': session_token,
+            'vm_id': session_data['pve_vm_id'],
+            'client': ssh_client,
+            'channel': channel
+        }
+        
+        emit('terminal_output', {'output': f'\x1b[32m✓ Подключено к контейнеру {ssh_info["host"]} (VM {session_data["pve_vm_id"]})\x1b[0m\r\n'})
+        
+        # Запускаем фоновый поток для чтения вывода из SSH
+        def ssh_reader():
+            while True:
+                try:
+                    if sid not in ssh_connections:
+                        break
+                    
+                    conn_data = ssh_connections.get(sid)
+                    if not conn_data or not conn_data.get('channel'):
+                        break
+                    
+                    channel = conn_data['channel']
+                    
+                    # Проверяем, есть ли данные для чтения
+                    if channel.recv_ready():
+                        data = channel.recv(4096).decode('utf-8', errors='replace')
+                        if data:
+                            socketio.emit('terminal_output', {'output': data}, room=sid)
+                    
+                    # Небольшая пауза чтобы не нагружать CPU
+                    import time
+                    time.sleep(0.01)
+                except Exception as e:
+                    app.logger.error(f'SSH reader error: {e}')
+                    break
+        
+        reader_thread = threading.Thread(target=ssh_reader, daemon=True)
+        reader_thread.start()
+        
+    except Exception as e:
+        app.logger.error(f'SSH connection error: {e}')
+        emit('terminal_output', {'error': f'Ошибка подключения по SSH: {str(e)}'})
 
 @socketio.on('terminal_input')
 def handle_terminal_input(data):
-    """Обработка ввода команд в терминале через WebSocket"""
+    """Обработка ввода команд в терминале через SSH"""
     session_token = data.get('session_token')
     command = data.get('command')
     
     if not session_token or not command:
-        app.logger.error(f"Invalid data received: session_token={session_token}, command={command}")
-        emit('terminal_output', {'error': 'Неверные данные: требуется session_token и command'})
         return
     
-    # Получаем информацию о подключении из хранилища по sid
     sid = flask_request.sid
-    conn_info = console_connections.get(sid)
+    ssh_info = ssh_connections.get(sid)
     
-    if not conn_info:
-        # Если нет информации в хранилище, пробуем найти сессию в БД по токену
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT ts.*, cont.pve_vm_id, cont.pve_node, cont.status as container_status
-            FROM terminal_sessions ts
-            JOIN containers cont ON ts.container_id = cont.id
-            WHERE ts.session_token = ?
-        """, (session_token,))
-        
-        session_data = cursor.fetchone()
-        conn.close()
-        
-        if not session_data:
-            app.logger.error(f"Session not found: {session_token}")
-            emit('terminal_output', {'error': f'Сессия не найдена (token: {session_token})'})
-            return
-        
-        # Проверяем статус контейнера
-        if session_data['container_status'] != 'running':
-            emit('terminal_output', {'error': f'Контейнер не запущен (статус: {session_data["container_status"]})'})
-            return
-        
-        vm_id = session_data['pve_vm_id']
-        node = session_data['pve_node']
-        
-        # Сохраняем в хранилище для будущих запросов
-        console_connections[sid] = {
-            'vm_id': vm_id,
-            'node': node,
-            'session_token': session_token
-        }
-        conn_info = console_connections[sid]
-    else:
-        vm_id = conn_info['vm_id']
-        node = conn_info['node']
-    
-    app.logger.info(f"Executing command in VM {vm_id}: {command}")
-    
-    # Получаем ticket для доступа к консоли через termproxy
-    console_ticket = get_container_console_ticket(vm_id, node)
-    
-    if not console_ticket:
-        app.logger.error(f"Failed to get console ticket for VM {vm_id}")
-        emit('terminal_output', {'error': 'Ошибка получения доступа к консоли. Проверьте, запущен ли контейнер.'})
+    if not ssh_info or not ssh_info.get('channel'):
         return
     
     try:
-        # Извлекаем порт и ticket из ответа
-        port = console_ticket.get('port', 8006)
-        ticket = console_ticket.get('ticket', '')
-        
-        # Формируем URL для WebSocket подключения к консоли Proxmox
-        config = load_pve_config()
-        if config:
-            host = config['host']
-            verify_ssl = config['verify_ssl']
-        else:
-            host = PVE_HOST
-            verify_ssl = PVE_VERIFY_SSL
-        
-        # Создаем WebSocket подключение к консоли Proxmox
-        import ssl
-        # Termproxy использует специальный формат URL: wss://host:port/term
-        # Хост и порт берем из ответа termproxy, путь фиксированный
-        ws_url = f"wss://{host}:{port}/term"
-        
-        # Настройки SSL
-        ssl_context = ssl.create_default_context()
-        if not verify_ssl:
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-        
-        # Заголовки для авторизации
-        headers = [
-            f"Cookie: PVEAuthCookie={ticket}"
-        ]
-        
-        # Подключаемся и отправляем команду
-        import asyncio
-        
-        async def send_command():
-            try:
-                async with websockets.connect(ws_url, ssl=ssl_context, close_timeout=5, ping_interval=None, extra_headers=headers) as websocket:
-                    # Отправляем команду с переводом строки
-                    # Формат данных для termproxy: {"data": "command\n"}
-                    payload = json.dumps({"data": command + '\n'})
-                    await websocket.send(payload)
-                    
-                    # Читаем ответ (с таймаутом)
-                    try:
-                        response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                        # Termproxy возвращает данные в формате JSON
-                        try:
-                            resp_data = json.loads(response)
-                            if 'data' in resp_data:
-                                emit('terminal_output', {'output': resp_data['data']})
-                            else:
-                                emit('terminal_output', {'output': response})
-                        except json.JSONDecodeError:
-                            emit('terminal_output', {'output': response})
-                    except asyncio.TimeoutError:
-                        # Команда выполнена, но вывода может не быть
-                        pass
-            except Exception as e:
-                app.logger.error(f"WebSocket error: {e}")
-                emit('terminal_output', {'error': f'Ошибка подключения к консоли: {str(e)}'})
-        
-        # Запускаем асинхронную функцию
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(send_command())
-        loop.close()
-        
+        # Отправляем команду в SSH канал
+        channel = ssh_info['channel']
+        channel.send(command)
     except Exception as e:
-        app.logger.error(f"Console execution error: {e}")
-        emit('terminal_output', {'error': f'Ошибка выполнения команды: {str(e)}'})
+        app.logger.error(f'SSH send error: {e}')
+        emit('terminal_output', {'error': f'Ошибка отправки команды: {str(e)}'})
 
 @socketio.on('terminal_resize')
 def handle_terminal_resize(data):
@@ -1282,26 +1229,19 @@ def handle_terminal_resize(data):
     if not session_token:
         return
     
-    conn = get_db()
-    cursor = conn.cursor()
+    sid = flask_request.sid
+    ssh_info = ssh_connections.get(sid)
     
-    cursor.execute("""
-        SELECT ts.*, cont.pve_vm_id, cont.pve_node
-        FROM terminal_sessions ts
-        JOIN containers cont ON ts.container_id = cont.id
-        WHERE ts.session_token = ?
-    """, (session_token,))
+    if not ssh_info or not ssh_info.get('channel'):
+        return
     
-    session_data = cursor.fetchone()
-    conn.close()
-    
-    if session_data:
-        # Отправляем команду resize в контейнер
-        endpoint = f"nodes/{session_data['pve_node']}/lxc/{session_data['pve_vm_id']}/exec"
-        exec_data = {
-            'command': ['stty', 'cols', str(cols), 'rows', str(rows)]
-        }
-        pve_api_request('POST', endpoint, exec_data)
+    try:
+        # Отправляем ANSI escape sequence для изменения размера
+        channel = ssh_info['channel']
+        resize_cmd = f'\x1b[8;{rows};{cols}t'
+        channel.send(resize_cmd)
+    except Exception as e:
+        app.logger.error(f'SSH resize error: {e}')
 
 if __name__ == '__main__':
     init_db()
