@@ -1285,6 +1285,7 @@ def handle_terminal_init(data):
         }
         
         emit('terminal_output', {'output': f'\x1b[32m✓ Подключено к контейнеру {ssh_info["host"]} (VM {session_data["pve_vm_id"]})\x1b[0m\r\n'})
+        emit('terminal_ready', {})
         
         # Запускаем фоновый поток для чтения вывода из SSH
         def ssh_reader():

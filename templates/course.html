@@ -204,7 +204,7 @@
                 <button id="openTerminalBtn" class="btn btn-primary" onclick="showTerminal()">Открыть терминал</button>
                 {% else %}
                 <button id="requestWorkspaceBtn" class="btn btn-primary" onclick="requestWorkspace()">
-                    <span class="icon">⚡</span> Запросить рабочее место
+                    Запросить рабочее место
                 </button>
                 {% endif %}
             </div>
@@ -286,7 +286,9 @@
             document.getElementById('placeholderInfo').style.display = 'none';
             document.getElementById('terminalContainer').classList.remove('hidden-terminal');
             if (!term) {
-                initTerminal(existingSessionToken, existingVmId, existingNode);
+                initTerminal(currentSessionToken || existingSessionToken, 
+                             window.currentVmId || existingVmId, 
+                             window.currentNode || existingNode);
             }
             setTimeout(() => {
                 if (fitAddon) fitAddon.fit();
@@ -302,7 +304,7 @@
             const progressText = document.getElementById('progressText');
             
             btn.disabled = true;
-            btn.innerHTML = '<span class="icon">⏳</span> Создание...';
+            btn.innerHTML = 'Создание...';
             progressOverlay.style.display = 'flex';
             
             let progressStep = 0;
@@ -347,13 +349,21 @@
                 
                 // Сохраняем данные сессии
                 currentSessionToken = data.session_token;
+                window.currentVmId = data.vm_id;
+                window.currentNode = data.node;
                 
                 // Скрываем placeholder и показываем терминал
                 document.getElementById('placeholderInfo').style.display = 'none';
                 document.getElementById('terminalContainer').classList.remove('hidden-terminal');
                 
-                // Обновляем кнопку
+                // Обновляем кнопку - скрываем кнопку запроса и показываем кнопку открытия
                 btn.style.display = 'none';
+                const openBtn = document.createElement('button');
+                openBtn.id = 'openTerminalBtn';
+                openBtn.className = 'btn btn-primary';
+                openBtn.textContent = 'Открыть терминал';
+                openBtn.onclick = showTerminal;
+                document.querySelector('.terminal-header').appendChild(openBtn);
                 
                 // Инициализируем терминал
                 initTerminal(data.session_token, data.vm_id, data.node);
@@ -363,7 +373,7 @@
                 progressMessage.textContent = 'Ошибка: ' + error.message;
                 progressMessage.style.color = '#ff4444';
                 btn.disabled = false;
-                btn.innerHTML = '<span class="icon">⚡</span> Запросить рабочее место';
+                btn.innerHTML = 'Запросить рабочее место';
                 
                 setTimeout(() => {
                     progressOverlay.style.display = 'none';
@@ -439,6 +449,12 @@
                         term.write(`\\r\\n\\x1b[31mОшибка: ${data.error}\\x1b[0m\\r\\n`);
                         updateStatus('disconnected');
                     }
+                });
+
+                // Обработка успешной инициализации терминала
+                socket.on('terminal_ready', () => {
+                    console.log('Terminal ready');
+                    updateStatus('connected');
                 });
 
                 socket.on('disconnect', () => {
