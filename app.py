@@ -832,6 +832,9 @@ def request_terminal(course_id):
         conn.close()
         return jsonify({'error': 'Курс не найден'}), 404
     
+    # Преобразуем sqlite3.Row в словарь для корректной работы .get()
+    course = dict(course)
+    
     # Определяем тип ресурса и получаем соответствующий шаблон
     resource_type = course.get('resource_type', 'container')
     template_vm_id = course.get('template_vm_id')  # Для LXC
@@ -1012,8 +1015,9 @@ def complete_stand(course_id):
     
     # Проверяем активную сессию пользователя для этого курса
     cursor.execute("""
-        SELECT ts.*, cont.pve_vm_id, cont.pve_node, cont.id as container_id
+        SELECT ts.*, c.resource_type, cont.pve_vm_id, cont.pve_node, cont.id as container_id
         FROM terminal_sessions ts
+        JOIN courses c ON ts.course_id = c.id
         JOIN containers cont ON ts.container_id = cont.id
         WHERE ts.user_id = ? AND ts.course_id = ? AND ts.status = 'active'
         ORDER BY ts.started_at DESC LIMIT 1
@@ -1024,30 +1028,43 @@ def complete_stand(course_id):
         conn.close()
         return jsonify({'error': 'Нет активной сессии для этого курса'}), 400
     
+    # Преобразуем в словарь и определяем тип ресурса
+    active_session = dict(active_session)
+    resource_type = active_session.get('resource_type', 'container')
+    
     vm_id = active_session['pve_vm_id']
     node = active_session['pve_node']
     container_id = active_session['container_id']
     session_token = active_session['session_token']
     
     try:
-        # Останавливаем контейнер
-        app.logger.info(f"Stopping container {vm_id}...")
-        stop_container(vm_id, node)
+        # Останавливаем ресурс в зависимости от типа
+        app.logger.info(f"Stopping {resource_type} {vm_id}...")
+        if resource_type == 'vm':
+            stop_vm(vm_id, node)
+        else:
+            stop_container(vm_id, node)
         
         # Ждем остановки
         import time
         STOP_TIMEOUT = 30
         waited = 0
         while waited < STOP_TIMEOUT:
-            status = get_container_status(vm_id, node)
+            if resource_type == 'vm':
+                status = get_resource_status(vm_id, node, resource_type)
+            else:
+                status = get_container_status(vm_id, node)
             if status == 'stopped':
                 break
             time.sleep(2)
             waited += 2
         
-        # Удаляем контейнер
-        app.logger.info(f"Deleting container {vm_id}...")
-        delete_container(vm_id, node)
+        # Удаляем ресурс
+        app.logger.info(f"Deleting {resource_type} {vm_id}...")
+        if resource_type == 'vm':
+            delete_vm(vm_id, node)
+        else:
+            delete_container(vm_id, node)
         
         # Обновляем статус сессии в базе данных
         cursor.execute("""
@@ -1085,7 +1102,7 @@ def terminal(session_token):
     cursor = conn.cursor()
     
     cursor.execute("""
-        SELECT ts.*, c.title as course_title, cont.pve_vm_id, cont.pve_node
+        SELECT ts.*, c.title as course_title, c.resource_type, cont.pve_vm_id, cont.pve_node
         FROM terminal_sessions ts
         JOIN courses c ON ts.course_id = c.id
         JOIN containers cont ON ts.container_id = cont.id
@@ -1099,8 +1116,12 @@ def terminal(session_token):
         flash('Сессия не найдена', 'error')
         return redirect(url_for('student_dashboard'))
     
+    # Преобразуем в словарь и определяем тип ресурса
+    session_data = dict(session_data)
+    resource_type = session_data.get('resource_type', 'container')
+    
     # Получаем URL для VNC прокси сессии через Proxmox API
-    vnc_proxy_url = get_vnc_proxy_url(session_data['pve_vm_id'], session_data['pve_node'])
+    vnc_proxy_url = get_vnc_proxy_url(session_data['pve_vm_id'], session_data['pve_node'], resource_type)
     
     return render_template('terminal.html', 
                          session_data=session_data, 
@@ -1120,8 +1141,9 @@ def terminal_exec(session_token):
     cursor = conn.cursor()
     
     cursor.execute("""
-        SELECT ts.*, cont.pve_vm_id, cont.pve_node
+        SELECT ts.*, c.resource_type, cont.pve_vm_id, cont.pve_node
         FROM terminal_sessions ts
+        JOIN courses c ON ts.course_id = c.id
         JOIN containers cont ON ts.container_id = cont.id
         WHERE ts.session_token = ? AND ts.user_id = ?
     """, (session_token, session['user_id']))
@@ -1132,8 +1154,16 @@ def terminal_exec(session_token):
     if not session_data:
         return jsonify({'error': 'Session not found'}), 404
     
-    # Выполняем команду через Proxmox API
-    endpoint = f"nodes/{session_data['pve_node']}/lxc/{session_data['pve_vm_id']}/exec"
+    # Преобразуем в словарь и определяем тип ресурса
+    session_data = dict(session_data)
+    resource_type = session_data.get('resource_type', 'container')
+    
+    # Выполняем команду через Proxmox API в зависимости от типа ресурса
+    if resource_type == 'vm':
+        endpoint = f"nodes/{session_data['pve_node']}/qemu/{session_data['pve_vm_id']}/agent/exec"
+    else:
+        endpoint = f"nodes/{session_data['pve_node']}/lxc/{session_data['pve_vm_id']}/exec"
+    
     exec_data = {
         'command': command,
         'node': session_data['pve_node']
