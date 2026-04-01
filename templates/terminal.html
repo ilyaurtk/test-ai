@@ -108,7 +108,7 @@
                 <h2 style="margin: 0;">{{ session_data.course_title }}</h2>
                 <small>
                     <span id="connectionStatus" class="connection-status status-disconnected"></span>
-                    VM ID: {{ session_data.pve_vm_id }} | Node: {{ session_data.pve_node }}
+                    VM ID: {{ session_data.pve_vm_id }} | Node: {{ session_data.pve_node }} | Тип: {{ session_data.get('resource_type', 'container') }}
                 </small>
             </div>
             <a href="{{ url_for('view_course', course_id=session_data.course_id) }}" class="btn btn-small">Завершить сессию</a>
@@ -126,7 +126,11 @@
             <div id="loading" class="loading-message" style="display: none;">Подключение к терминалу...</div>
         </div>
         <div class="terminal-info-bar">
+            {% if session_data.get('resource_type') == 'vm' %}
+            ⚠️ noVNC консоль подключена к виртуальной машине Proxmox VE (VM {{ session_data.pve_vm_id }}). Все изменения сохраняются в изолированной среде.
+            {% else %}
             ⚠️ Терминал подключён к контейнеру Proxmox VE (VM {{ session_data.pve_vm_id }}) через SSH. Все изменения сохраняются в изолированной среде.
+            {% endif %}
         </div>
     </div>
 
@@ -135,6 +139,7 @@
         const vmId = {{ session_data.pve_vm_id }};
         const node = '{{ session_data.pve_node }}';
         const sessionToken = '{{ session_token }}';
+        const resourceType = '{{ session_data.get("resource_type", "container") }}';
 
         let term = null;
         let fitAddon = null;
@@ -238,6 +243,30 @@
                     document.getElementById('progress-container').style.display = 'none';
                     // Инициализируем терминальную сессию
                     socket.emit('terminal_init', { session_token: sessionToken });
+                });
+
+                // Обработка сигнала noVNC требуется для VM
+                socket.on('novnc_required', (data) => {
+                    console.log('noVNC required:', data);
+                    updateStatus('disconnected');
+                    document.getElementById('loading').innerHTML = `<span style="color: #00ff41;">${data.message}</span>`;
+                    document.getElementById('loading').style.display = 'block';
+                    
+                    // Перенаправляем на страницу noVNC прокси Proxmox
+                    const pveHost = '{{ PVE_HOST }}';
+                    const pvePort = {{ PVE_PORT }};
+                    const vmId = data.vm_id;
+                    const node = data.node;
+                    
+                    // Формируем URL для noVNC через Proxmox
+                    // Используем vncproxy для получения билета и подключения
+                    setTimeout(() => {
+                        // Открываем noVNC в новом окне или перенаправляем
+                        const novncUrl = `https://${pveHost}:${pvePort}/vncproxy/?vmid=${vmId}&node=${node}`;
+                        window.open(novncUrl, '_blank');
+                        // Или можно перенаправить пользователя
+                        // window.location.href = novncUrl;
+                    }, 2000);
                 });
 
                 socket.on('terminal_output', (data) => {

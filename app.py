@@ -434,18 +434,21 @@ def get_resource_status(vm_id, node=None, resource_type='container'):
     else:
         return get_container_status(vm_id, node)
 
-def get_container_ip(vm_id, node=None):
-    """Получить IP-адрес контейнера из Proxmox через API (включая DHCP) с повторными попытками"""
+def get_container_ip(vm_id, node=None, resource_type='container'):
+    """Получить IP-адрес контейнера или VM из Proxmox через API (включая DHCP) с повторными попытками"""
     if node is None:
         node = get_pve_node()
+    
+    # Для QEMU VM используем другой endpoint
+    api_type = 'qemu' if resource_type == 'vm' else 'lxc'
     
     # Делаем несколько попыток получения IP с интервалом в 2 секунды
     max_attempts = 30
     for attempt in range(max_attempts):
-        app.logger.info(f"Attempt {attempt+1}/{max_attempts} to get IP for VM {vm_id}")
+        app.logger.info(f"Attempt {attempt+1}/{max_attempts} to get IP for {api_type} {vm_id}")
         
         # Пробуем получить IP через эндпоинт интерфейсов (работает для DHCP)
-        endpoint = f"nodes/{node}/lxc/{vm_id}/interfaces"
+        endpoint = f"nodes/{node}/{api_type}/{vm_id}/interfaces"
         result = pve_api_request('GET', endpoint)
         
         app.logger.info(f"API Response for interfaces: {result}")
@@ -497,7 +500,7 @@ def get_container_ip(vm_id, node=None):
                                 return ip
         
         # Если не нашли через interfaces, пробуем конфиг (статический IP)
-        endpoint = f"nodes/{node}/lxc/{vm_id}/config"
+        endpoint = f"nodes/{node}/{api_type}/{vm_id}/config"
         config_result = pve_api_request('GET', endpoint)
         
         if config_result and 'data' in config_result:
@@ -517,7 +520,7 @@ def get_container_ip(vm_id, node=None):
             import time
             time.sleep(2)
     
-    app.logger.error(f"Failed to get IP address for VM {vm_id} after {max_attempts} attempts")
+    app.logger.error(f"Failed to get IP address for {api_type} {vm_id} after {max_attempts} attempts")
     return None
 
 def get_vnc_proxy_url(vm_id, node=None, resource_type='container'):
@@ -526,7 +529,7 @@ def get_vnc_proxy_url(vm_id, node=None, resource_type='container'):
         node = get_pve_node()
     
     # Получаем IP-адрес через API (работает для LXC и QEMU)
-    container_ip = get_container_ip(vm_id, node)
+    container_ip = get_container_ip(vm_id, node, resource_type)
     
     if container_ip:
         # Возвращаем информацию для SSH/VNC подключения
@@ -1548,7 +1551,7 @@ def handle_terminal_init(data):
     cursor = conn.cursor()
     
     cursor.execute("""
-        SELECT ts.*, cont.pve_vm_id, cont.pve_node, cont.status as container_status, c.title as course_title
+        SELECT ts.*, cont.pve_vm_id, cont.pve_node, cont.status as container_status, c.title as course_title, c.resource_type
         FROM terminal_sessions ts
         JOIN containers cont ON ts.container_id = cont.id
         JOIN courses c ON ts.course_id = c.id
@@ -1562,13 +1565,27 @@ def handle_terminal_init(data):
         emit('terminal_output', {'error': 'Сессия не найдена'})
         return
     
+    # Преобразуем в словарь и определяем тип ресурса
+    session_data = dict(session_data)
+    resource_type = session_data.get('resource_type', 'container')
+    
     # Проверяем статус контейнера
     if session_data['container_status'] != 'running':
         emit('terminal_output', {'error': f'Контейнер не запущен (статус: {session_data["container_status"]})'})
         return
     
-    # Получаем информацию для SSH подключения
-    ssh_info = get_vnc_proxy_url(session_data['pve_vm_id'], session_data['pve_node'])
+    # Для VM используем noVNC, для LXC - SSH
+    if resource_type == 'vm':
+        # Для VM возвращаем сигнал для переключения на noVNC
+        emit('novnc_required', {
+            'vm_id': session_data['pve_vm_id'],
+            'node': session_data['pve_node'],
+            'message': 'Для виртуальных машин используется noVNC консоль. Перенаправление...'
+        })
+        return
+    
+    # Получаем информацию для SSH подключения (только для LXC)
+    ssh_info = get_vnc_proxy_url(session_data['pve_vm_id'], session_data['pve_node'], resource_type)
     
     if not ssh_info:
         emit('terminal_output', {'error': 'Не удалось получить IP-адрес контейнера'})
