@@ -365,39 +365,44 @@ def get_container_status(vm_id, node=None):
     return 'unknown'
 
 def get_container_ip(vm_id, node=None):
-    """Получить IP-адрес контейнера из Proxmox"""
+    """Получить IP-адрес контейнера из Proxmox через API (включая DHCP)"""
     if node is None:
         node = get_pve_node()
     
-    # Получаем конфигурацию контейнера
+    # Пробуем получить IP через эндпоинт интерфейсов (работает для DHCP)
+    endpoint = f"nodes/{node}/lxc/{vm_id}/interfaces"
+    result = pve_api_request('GET', endpoint)
+    
+    if result and 'data' in result:
+        interfaces = result['data']
+        for iface in interfaces:
+            # Ищем активные интерфейсы с IPv4 адресами (кроме lo)
+            if iface.get('name') != 'lo' and iface.get('running'):
+                ipaddr = iface.get('ip-address')
+                if ipaddr and ':' not in ipaddr:  # Только IPv4
+                    return ipaddr
+                
+                # Проверяем альтернативный формат (список IP)
+                ips = iface.get('ip-addresses', [])
+                for ip_info in ips:
+                    if isinstance(ip_info, dict):
+                        ip = ip_info.get('ip-address')
+                        if ip and ':' not in ip:  # Только IPv4
+                            return ip
+    
+    # Если не нашли через interfaces, пробуем конфиг (статический IP)
     endpoint = f"nodes/{node}/lxc/{vm_id}/config"
     result = pve_api_request('GET', endpoint)
     
     if result and 'data' in result:
         config = result['data']
-        # Пробуем получить IP из net0 или других сетевых интерфейсов
-        # Формат: net0=name=eth0,bridge=vmbr0,gw=192.168.1.1,hwaddr=XX:XX:XX:XX:XX:XX,ip=192.168.1.100/24,type=veth
         for key in config:
             if key.startswith('net'):
                 net_config = config[key]
                 if 'ip=' in net_config:
-                    # Извлекаем IP адрес
                     ip_part = net_config.split('ip=')[1].split(',')[0]
-                    # Убираем маску подсети
                     ip_addr = ip_part.split('/')[0]
                     return ip_addr
-    
-    # Если не нашли в конфиге, пробуем получить через QEMU agent (если доступен)
-    endpoint = f"nodes/{node}/lxc/{vm_id}/agent/network-get-interfaces"
-    result = pve_api_request('GET', endpoint)
-    if result and 'data' in result:
-        interfaces = result.get('data', [])
-        for iface in interfaces:
-            if iface.get('name') == 'eth0':
-                addresses = iface.get('ip-addresses', [])
-                for addr in addresses:
-                    if addr.get('ip-address-type') == 'ipv4':
-                        return addr.get('ip-address')
     
     return None
 
