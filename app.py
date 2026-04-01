@@ -812,6 +812,81 @@ def request_terminal(course_id):
         'node': node
     })
 
+@app.route('/complete_stand/<int:course_id>', methods=['POST'])
+@login_required
+def complete_stand(course_id):
+    """Завершить стенд - остановить и удалить контейнер"""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Проверяем активную сессию пользователя для этого курса
+    cursor.execute("""
+        SELECT ts.*, cont.pve_vm_id, cont.pve_node, cont.id as container_id
+        FROM terminal_sessions ts
+        JOIN containers cont ON ts.container_id = cont.id
+        WHERE ts.user_id = ? AND ts.course_id = ? AND ts.status = 'active'
+        ORDER BY ts.started_at DESC LIMIT 1
+    """, (session['user_id'], course_id))
+    active_session = cursor.fetchone()
+    
+    if not active_session:
+        conn.close()
+        return jsonify({'error': 'Нет активной сессии для этого курса'}), 400
+    
+    vm_id = active_session['pve_vm_id']
+    node = active_session['pve_node']
+    container_id = active_session['container_id']
+    session_token = active_session['session_token']
+    
+    try:
+        # Останавливаем контейнер
+        app.logger.info(f"Stopping container {vm_id}...")
+        stop_container(vm_id, node)
+        
+        # Ждем остановки
+        import time
+        STOP_TIMEOUT = 30
+        waited = 0
+        while waited < STOP_TIMEOUT:
+            status = get_container_status(vm_id, node)
+            if status == 'stopped':
+                break
+            time.sleep(2)
+            waited += 2
+        
+        # Удаляем контейнер
+        app.logger.info(f"Deleting container {vm_id}...")
+        delete_container(vm_id, node)
+        
+        # Обновляем статус сессии в базе данных
+        cursor.execute("""
+            UPDATE terminal_sessions 
+            SET status = 'completed', completed_at = CURRENT_TIMESTAMP
+            WHERE session_token = ?
+        """, (session_token,))
+        
+        # Обновляем статус контейнера
+        cursor.execute("""
+            UPDATE containers 
+            SET status = 'deleted'
+            WHERE id = ?
+        """, (container_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        app.logger.info(f'Container VM {vm_id} stopped and deleted successfully')
+        
+        return jsonify({
+            'success': True,
+            'message': 'Стенд успешно завершен. Контейнер остановлен и удален.'
+        })
+        
+    except Exception as e:
+        app.logger.error(f'Error stopping/deleting container VM {vm_id}: {e}')
+        conn.close()
+        return jsonify({'error': f'Ошибка завершения стенда: {str(e)}'}), 500
+
 @app.route('/terminal/<session_token>')
 @login_required
 def terminal(session_token):

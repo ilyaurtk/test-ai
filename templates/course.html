@@ -204,7 +204,7 @@
             <div class="terminal-header">
                 <h2><span id="connectionStatus" class="connection-status status-disconnected"></span>Рабочее место</h2>
                 {% if active_session %}
-                <button id="openTerminalBtn" class="btn btn-primary" onclick="showTerminal()">Открыть терминал</button>
+                <button id="completeStandBtn" class="btn btn-primary" onclick="completeStand()">Завершить стенд</button>
                 {% else %}
                 <button id="requestWorkspaceBtn" class="btn btn-primary" onclick="requestWorkspace()">
                     Запросить рабочее место
@@ -372,14 +372,14 @@
                 window.currentVmId = data.vm_id;
                 window.currentNode = data.node;
                 
-                // Обновляем кнопку - скрываем кнопку запроса и показываем кнопку открытия
+                // Обновляем кнопку - скрываем кнопку запроса и показываем кнопку завершения стенда
                 btn.style.display = 'none';
-                const openBtn = document.createElement('button');
-                openBtn.id = 'openTerminalBtn';
-                openBtn.className = 'btn btn-primary';
-                openBtn.textContent = 'Открыть терминал';
-                openBtn.onclick = showTerminal;
-                document.querySelector('.terminal-header').appendChild(openBtn);
+                const completeBtn = document.createElement('button');
+                completeBtn.id = 'completeStandBtn';
+                completeBtn.className = 'btn btn-primary';
+                completeBtn.textContent = 'Завершить стенд';
+                completeBtn.onclick = completeStand;
+                document.querySelector('.terminal-header').appendChild(completeBtn);
                 
                 // Сначала скрываем placeholder и показываем контейнер терминала
                 document.getElementById('placeholderInfo').style.display = 'none';
@@ -416,6 +416,43 @@
                 setTimeout(() => {
                     progressOverlay.style.display = 'none';
                 }, 3000);
+            }
+        }
+
+        // Завершить стенд - остановить и удалить контейнер
+        async function completeStand() {
+            if (!confirm('Вы уверены, что хотите завершить стенд? Контейнер будет остановлен и удален.')) {
+                return;
+            }
+
+            const btn = document.getElementById('completeStandBtn');
+            btn.disabled = true;
+            btn.innerHTML = 'Завершение...';
+
+            try {
+                const response = await fetch(`/complete_stand/${courseId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Ошибка завершения стенда');
+                }
+
+                alert('Стенд успешно завершен. Контейнер остановлен и удален.');
+                
+                // Перезагружаем страницу для обновления состояния
+                window.location.reload();
+
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Ошибка: ' + error.message);
+                btn.disabled = false;
+                btn.innerHTML = 'Завершить стенд';
             }
         }
 
