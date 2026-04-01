@@ -735,6 +735,8 @@ def request_terminal(course_id):
     container_name = f"u{session['user_id']}-c{course_id}-{random_suffix}"
     
     # Клонируем шаблон
+    app.logger.info(f"Cloning template {template_vm_id} to {new_vm_id}...")
+    socketio.emit('progress', {'step': 1, 'total': 4, 'message': 'Клонирование контейнера...'}, room=flask_request.sid)
     if not clone_container(template_vm_id, new_vm_id, container_name, node):
         conn.close()
         flash('Не удалось создать рабочее место. Проверьте подключение к Proxmox.', 'error')
@@ -760,6 +762,8 @@ def request_terminal(course_id):
             break
     
     # Пробуем запустить контейнер с повторными попытками
+    app.logger.info(f"Starting container {new_vm_id}...")
+    socketio.emit('progress', {'step': 2, 'total': 4, 'message': 'Запуск контейнера...'}, room=flask_request.sid)
     start_attempts = 3
     started = False
     for attempt in range(start_attempts):
@@ -775,7 +779,11 @@ def request_terminal(course_id):
     
     # Увеличенная пауза после запуска для полной инициализации контейнера и консоли
     app.logger.info(f"Container {new_vm_id} started. Waiting for console initialization...")
+    socketio.emit('progress', {'step': 3, 'total': 4, 'message': 'Ожидание готовности...'}, room=flask_request.sid)
     time.sleep(15)  # Ждем 15 секунд для полной загрузки служб внутри контейнера
+    
+    # Получаем IP адрес
+    socketio.emit('progress', {'step': 4, 'total': 4, 'message': 'Получение IP адреса...'}, room=flask_request.sid)
     
     # Создаем запись в таблице containers для нового контейнера
     cursor.execute("""
@@ -792,6 +800,11 @@ def request_terminal(course_id):
     """, (session['user_id'], course_id, session_token, container_id))
     
     conn.commit()
+    
+    # Устанавливаем статус сессии как ready
+    sid = flask_request.sid
+    session_status[sid] = 'ready'
+    socketio.emit('progress', {'step': 4, 'total': 4, 'message': 'Готово! Подключение...'}, room=sid)
     
     # Обновляем время последнего доступа
     cursor.execute("""
@@ -1119,10 +1132,20 @@ def uploaded_file(filename):
 # Хранилище активных SSH подключений
 ssh_connections = {}
 
+# Словарь для отслеживания статуса сессий (creating, ready, finished)
+session_status = {}
+
 @socketio.on('connect')
 def handle_connect():
     """Обработка подключения клиента к WebSocket"""
     app.logger.info(f'Клиент подключился: {flask_request.sid}')
+    
+    # Проверяем, не завершена ли сессия
+    sid = flask_request.sid
+    if sid in session_status and session_status[sid] == 'finished':
+        emit('session_finished', {'message': 'Сессия завершена. Повторный вход невозможен.'})
+        return False
+    
     emit('connected', {'status': 'ok'})
 
 @socketio.on('disconnect')
@@ -1185,6 +1208,13 @@ def handle_disconnect():
             app.logger.info(f'Terminal session {session_token} marked as closed')
         except Exception as e:
             app.logger.error(f'Error updating terminal session status: {e}')
+    
+    # Устанавливаем статус сессии в finished чтобы предотвратить повторное подключение
+    sid = flask_request.sid
+    if sid in session_status:
+        session_status[sid] = 'finished'
+        socketio.emit('session_finished', {'message': 'Сессия завершена'}, room=sid)
+        app.logger.info(f'Session {sid} marked as finished')
 
 @socketio.on('terminal_init')
 def handle_terminal_init(data):
