@@ -274,6 +274,7 @@
         // Автоматически загружаем шаблоны при загрузке страницы
         document.addEventListener('DOMContentLoaded', function() {
             loadPveTemplates();
+            toggleResourceType(); // Инициализация видимости полей при загрузке
         });
 
         async function loadPveTemplates() {
@@ -281,34 +282,60 @@
                 const response = await fetch('/admin/get_pve_templates');
                 const data = await response.json();
                 
-                if (data.templates && data.templates.length > 0) {
-                    // Обновляем список шаблонов в форме создания курса
-                    const selectElement = document.getElementById('template-vm-select');
-                    if (selectElement) {
-                        // Сохраняем текущее выбранное значение
-                        const currentValue = selectElement.value;
-                        
-                        // Очищаем все опции кроме первой
-                        while (selectElement.options.length > 1) {
-                            selectElement.remove(1);
-                        }
-                        
-                        // Добавляем новые опции из Proxmox
-                        data.templates.forEach(t => {
-                            const option = document.createElement('option');
-                            option.value = t.vmid;
-                            option.textContent = `${t.name} (VM ${t.vmid})`;
-                            selectElement.appendChild(option);
-                        });
-                        
-                        // Восстанавливаем предыдущее выбранное значение если оно существует
-                        if (currentValue) {
-                            selectElement.value = currentValue;
-                        }
+                // Обновляем список LXC шаблонов
+                const lxcSelectElement = document.getElementById('template-vm-select');
+                if (lxcSelectElement && data.templates) {
+                    const currentValue = lxcSelectElement.value;
+                    while (lxcSelectElement.options.length > 1) {
+                        lxcSelectElement.remove(1);
+                    }
+                    data.templates.forEach(t => {
+                        const option = document.createElement('option');
+                        option.value = t.vmid;
+                        option.textContent = `${t.name} (LXC VM ${t.vmid})`;
+                        lxcSelectElement.appendChild(option);
+                    });
+                    if (currentValue) {
+                        lxcSelectElement.value = currentValue;
+                    }
+                }
+                
+                // Обновляем список QEMU VM шаблонов
+                const qemuSelectElement = document.getElementById('template-qemu-select');
+                if (qemuSelectElement && data.vm_templates) {
+                    const currentValue = qemuSelectElement.value;
+                    while (qemuSelectElement.options.length > 1) {
+                        qemuSelectElement.remove(1);
+                    }
+                    data.vm_templates.forEach(t => {
+                        const option = document.createElement('option');
+                        option.value = t.vmid;
+                        option.textContent = `${t.name} (QEMU VM ${t.vmid})`;
+                        qemuSelectElement.appendChild(option);
+                    });
+                    if (currentValue) {
+                        qemuSelectElement.value = currentValue;
                     }
                 }
             } catch (error) {
                 console.error('Ошибка загрузки шаблонов:', error);
+            }
+        }
+
+        function toggleResourceType() {
+            const resourceType = document.getElementById('resource-type-select').value;
+            const lxcGroup = document.getElementById('lxc-template-group');
+            const qemuGroup = document.getElementById('qemu-template-group');
+            const novncGroup = document.getElementById('novnc-group');
+            
+            if (resourceType === 'vm') {
+                lxcGroup.style.display = 'none';
+                qemuGroup.style.display = 'block';
+                novncGroup.style.display = 'block';
+            } else {
+                lxcGroup.style.display = 'block';
+                qemuGroup.style.display = 'none';
+                novncGroup.style.display = 'none';
             }
         }
 
@@ -325,19 +352,60 @@
                 if (data.success) {
                     resultDiv.innerHTML = `<p class="alert alert-success">${data.message}</p>`;
                     
-                    // Обновляем список шаблонов в форме создания курса
+                    // Обновляем списки шаблонов в форме создания курса
                     loadPveTemplates();
                     
-                    // Отображаем шаблоны
+                    // Отображаем оба типа шаблонов
+                    let allTemplatesHtml = '';
+                    
                     if (data.templates && data.templates.length > 0) {
-                        let templatesHtml = '<table class="data-table"><thead><tr><th>VM ID</th><th>Имя</th><th>Описание</th><th>Статус</th></tr></thead><tbody>';
+                        allTemplatesHtml += '<h4>LXC Контейнеры (шаблоны)</h4>';
+                        allTemplatesHtml += '<table class="data-table"><thead><tr><th>VM ID</th><th>Имя</th><th>Описание</th><th>Статус</th></tr></thead><tbody>';
                         data.templates.forEach(t => {
-                            templatesHtml += `<tr><td>${t.vmid}</td><td>${t.name}</td><td>${t.description || '-'}</td><td><span class="status-badge status-${t.status}">${t.status}</span></td></tr>`;
+                            allTemplatesHtml += `<tr><td>${t.vmid}</td><td>${t.name}</td><td>${t.description || '-'}</td><td><span class="status-badge status-${t.status}">${t.status}</span></td></tr>`;
                         });
-                        templatesHtml += '</tbody></table>';
-                        templatesDiv.innerHTML = templatesHtml;
-                    } else {
+                        allTemplatesHtml += '</tbody></table>';
+                    }
+                    
+                    if (data.vm_templates && data.vm_templates.length > 0) {
+                        allTemplatesHtml += '<h4 style="margin-top: 20px;">QEMU Виртуальные машины (шаблоны)</h4>';
+                        allTemplatesHtml += '<table class="data-table"><thead><tr><th>VM ID</th><th>Имя</th><th>Описание</th><th>Статус</th></tr></thead><tbody>';
+                        data.vm_templates.forEach(t => {
+                            allTemplatesHtml += `<tr><td>${t.vmid}</td><td>${t.name}</td><td>${t.description || '-'}</td><td><span class="status-badge status-${t.status}">${t.status}</span></td></tr>`;
+                        });
+                        allTemplatesHtml += '</tbody></table>';
+                    }
+                    
+                    // Отображаем все контейнеры (не шаблоны)
+                    if (data.containers && data.containers.length > 0) {
+                        const nonTemplateContainers = data.containers.filter(c => !c.template);
+                        if (nonTemplateContainers.length > 0) {
+                            allTemplatesHtml += '<h4 style="margin-top: 20px;">LXC Контейнеры (работающие)</h4>';
+                            allTemplatesHtml += '<table class="data-table"><thead><tr><th>VM ID</th><th>Имя</th><th>Статус</th><th>CPU</th><th>Память</th></tr></thead><tbody>';
+                            nonTemplateContainers.forEach(c => {
+                                allTemplatesHtml += `<tr><td>${c.vmid}</td><td>${c.name}</td><td><span class="status-badge status-${c.status}">${c.status}</span></td><td>${c.cpu}/${c.maxcpu}</td><td>${Math.round(c.mem/1024/1024)}MB/${Math.round(c.maxmem/1024/1024)}MB</td></tr>`;
+                            });
+                            allTemplatesHtml += '</tbody></table>';
+                        }
+                    }
+                    
+                    // Отображаем все VM (не шаблоны)
+                    if (data.vms && data.vms.length > 0) {
+                        const nonTemplateVms = data.vms.filter(vm => !vm.template);
+                        if (nonTemplateVms.length > 0) {
+                            allTemplatesHtml += '<h4 style="margin-top: 20px;">QEMU Виртуальные машины (работающие)</h4>';
+                            allTemplatesHtml += '<table class="data-table"><thead><tr><th>VM ID</th><th>Имя</th><th>Статус</th><th>CPU</th><th>Память</th></tr></thead><tbody>';
+                            nonTemplateVms.forEach(vm => {
+                                allTemplatesHtml += `<tr><td>${vm.vmid}</td><td>${vm.name}</td><td><span class="status-badge status-${vm.status}">${vm.status}</span></td><td>${vm.cpu}/${vm.maxcpu}</td><td>${Math.round(vm.mem/1024/1024)}MB/${Math.round(vm.maxmem/1024/1024)}MB</td></tr>`;
+                            });
+                            allTemplatesHtml += '</tbody></table>';
+                        }
+                    }
+                    
+                    if (!allTemplatesHtml) {
                         templatesDiv.innerHTML = '<p class="text-muted">Шаблоны не найдены</p>';
+                    } else {
+                        templatesDiv.innerHTML = allTemplatesHtml;
                     }
                 } else {
                     resultDiv.innerHTML = `<p class="alert alert-error">${data.message}</p>`;

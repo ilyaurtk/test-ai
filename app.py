@@ -408,7 +408,7 @@ def stop_vm(vm_id, node=None):
     return result is not None
 
 def get_container_status(vm_id, node=None):
-    """Получить статус контейнера"""
+    """Получить статус контейнера LXC"""
     if node is None:
         node = get_pve_node()
     endpoint = f"nodes/{node}/lxc/{vm_id}/status/current"
@@ -416,6 +416,23 @@ def get_container_status(vm_id, node=None):
     if result and 'data' in result:
         return result['data'].get('status', 'unknown')
     return 'unknown'
+
+def get_vm_status(vm_id, node=None):
+    """Получить статус QEMU VM"""
+    if node is None:
+        node = get_pve_node()
+    endpoint = f"nodes/{node}/qemu/{vm_id}/status/current"
+    result = pve_api_request('GET', endpoint)
+    if result and 'data' in result:
+        return result['data'].get('status', 'unknown')
+    return 'unknown'
+
+def get_resource_status(vm_id, node=None, resource_type='container'):
+    """Получить статус ресурса (LXC или QEMU VM)"""
+    if resource_type == 'vm':
+        return get_vm_status(vm_id, node)
+    else:
+        return get_container_status(vm_id, node)
 
 def get_container_ip(vm_id, node=None):
     """Получить IP-адрес контейнера из Proxmox через API (включая DHCP) с повторными попытками"""
@@ -630,6 +647,29 @@ def get_pve_containers(node=None):
                 'maxdisk': vm.get('maxdisk', 0)
             })
     return containers
+
+def get_pve_vms(node=None):
+    """Получить список всех QEMU VM из Proxmox"""
+    if node is None:
+        node = get_pve_node()
+    endpoint = f"nodes/{node}/qemu"
+    result = pve_api_request('GET', endpoint)
+    vms = []
+    if result and 'data' in result:
+        for vm in result['data']:
+            vms.append({
+                'vmid': vm.get('vmid'),
+                'name': vm.get('name', f'VM {vm.get("vmid")}'),
+                'status': vm.get('status', 'unknown'),
+                'template': vm.get('template', 0),
+                'cpu': vm.get('cpu', 0),
+                'maxcpu': vm.get('maxcpu', 0),
+                'mem': vm.get('mem', 0),
+                'maxmem': vm.get('maxmem', 0),
+                'disk': vm.get('disk', 0),
+                'maxdisk': vm.get('maxdisk', 0)
+            })
+    return vms
 
 @app.route('/')
 def index():
@@ -862,7 +902,7 @@ def request_terminal(course_id):
         while waited < max_wait:
             time.sleep(wait_interval)
             waited += wait_interval
-            status = get_container_status(new_vm_id, node)  # Используем ту же функцию для статуса
+            status = get_resource_status(new_vm_id, node, resource_type)  # Используем универсальную функцию для статуса
             if status != 'unknown':
                 time.sleep(5)
                 break
@@ -907,7 +947,7 @@ def request_terminal(course_id):
         while waited < max_wait:
             time.sleep(wait_interval)
             waited += wait_interval
-            status = get_container_status(new_vm_id, node)
+            status = get_container_status(new_vm_id, node)  # Для LXC контейнеров
             if status != 'unknown':
                 time.sleep(5)
                 break
@@ -1205,14 +1245,18 @@ def save_pve_config():
 def test_pve_connection():
     """Проверить подключение к Proxmox и вернуть список шаблонов"""
     templates = get_pve_templates()
+    vm_templates = get_pve_vm_templates()
     all_containers = get_pve_containers()
+    all_vms = get_pve_vms()
     
-    if templates or all_containers:
+    if templates or vm_templates or all_containers or all_vms:
         return jsonify({
             'success': True,
             'templates': templates,
+            'vm_templates': vm_templates,
             'containers': all_containers,
-            'message': f'Подключение успешно. Найдено шаблонов: {len(templates)}, контейнеров: {len(all_containers)}'
+            'vms': all_vms,
+            'message': f'Подключение успешно. Найдено LXC шаблонов: {len(templates)}, QEMU шаблонов: {len(vm_templates)}, контейнеров: {len(all_containers)}, VM: {len(all_vms)}'
         })
     else:
         return jsonify({
@@ -1225,7 +1269,15 @@ def test_pve_connection():
 def get_pve_templates_route():
     """API endpoint для получения списка шаблонов"""
     templates = get_pve_templates()
-    return jsonify({'templates': templates})
+    vm_templates = get_pve_vm_templates()
+    all_containers = get_pve_containers()
+    all_vms = get_pve_vms()
+    return jsonify({
+        'templates': templates, 
+        'vm_templates': vm_templates,
+        'containers': all_containers,
+        'vms': all_vms
+    })
 
 @app.route('/admin/create_user', methods=['POST'])
 @admin_required
