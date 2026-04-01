@@ -136,7 +136,10 @@
             50% { opacity: 0.5; }
         }
         .hidden-terminal {
-            display: none;
+            display: none !important;
+        }
+        .terminal-container-visible {
+            display: block !important;
         }
     </style>
 </head>
@@ -220,10 +223,12 @@
                     </div>
                 </div>
                 
-                {% if active_session %}
+                <!-- Терминал всегда присутствует в DOM, но скрыт пока не нужен -->
                 <div id="terminalContainer" class="hidden-terminal">
                     <div id="terminal"></div>
                 </div>
+                
+                {% if active_session %}
                 <div id="placeholderInfo" class="terminal-info" style="display: none;">
                     <h3>Информация о рабочем месте</h3>
                     <p>У вас есть активная сессия для этого курса.</p>
@@ -290,6 +295,7 @@
             if (placeholder) placeholder.style.display = 'none';
             if (terminalContainer) {
                 terminalContainer.classList.remove('hidden-terminal');
+                terminalContainer.classList.add('terminal-container-visible');
                 console.log('Terminal container shown');
             }
             
@@ -377,16 +383,21 @@
                 
                 // Сначала скрываем placeholder и показываем контейнер терминала
                 document.getElementById('placeholderInfo').style.display = 'none';
-                document.getElementById('terminalContainer').classList.remove('hidden-terminal');
+                const terminalContainer = document.getElementById('terminalContainer');
+                terminalContainer.classList.remove('hidden-terminal');
+                terminalContainer.classList.add('terminal-container-visible');
                 
                 // Даем DOM время обновиться перед инициализацией терминала
                 setTimeout(() => {
                     try {
-                        // Инициализируем терминал
-                        initTerminal(data.session_token, data.vm_id, data.node);
-                        // Сразу открываем терминал
-                        showTerminal();
+                        // Инициализируем терминал с новыми данными сессии
+                        initTerminal(currentSessionToken, window.currentVmId, window.currentNode);
                         console.log('Terminal initialization completed');
+                        
+                        // После инициализации вызываем showTerminal чтобы убедиться что терминал виден
+                        setTimeout(() => {
+                            showTerminal();
+                        }, 200);
                     } catch (initError) {
                         console.error('Error during terminal initialization:', initError);
                         progressOverlay.style.display = 'flex';
