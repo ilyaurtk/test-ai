@@ -172,16 +172,13 @@
                 term.open(document.getElementById('terminal'));
                 fitAddon.fit();
 
-                // Обработка изменения размера окна
+                // Обработка изменения размера окна - отправляем ANSI escape sequence
                 window.addEventListener('resize', () => {
                     fitAddon.fit();
                     if (socket && socket.readyState === WebSocket.OPEN) {
-                        // Отправляем размер терминала
-                        socket.send(JSON.stringify({
-                            type: 'resize',
-                            cols: term.cols,
-                            rows: term.rows
-                        }));
+                        // Отправляем размер терминала через ANSI escape sequence
+                        const resizeCmd = `\x1b[8;${term.rows};${term.cols}t`;
+                        socket.send(resizeCmd);
                     }
                 });
 
@@ -205,28 +202,28 @@
                     updateStatus('connected');
                     document.getElementById('loading').innerHTML = '<span style="color: #00ff41;">✓ Подключено</span>';
                     
-                    // Отправляем начальный размер
+                    // Отправляем начальный размер в termproxy (сырой формат)
                     if (fitAddon) {
                         fitAddon.fit();
-                        socket.send(JSON.stringify({
-                            type: 'resize',
-                            cols: term.cols,
-                            rows: term.rows
-                        }));
+                        // Termproxy не требует явного resize при подключении, но можно отправить
+                        // resize-команду если нужно: \x1b[8;rows;colst (ANSI escape sequence)
+                        const resizeCmd = `\x1b[8;${term.rows};${term.cols}t`;
+                        socket.send(resizeCmd);
                     }
                 };
 
                 socket.onmessage = (event) => {
-                    // Данные от сервера могут быть в разных форматах
-                    try {
-                        const data = JSON.parse(event.data);
-                        if (data.type === 'output' || data.data) {
-                            term.write(data.data || data.output || '');
-                        } else if (data.type === 'resize') {
-                            // Сервер подтверждает изменение размера
-                        }
-                    } catch (e) {
-                        // Если не JSON, выводим как есть
+                    // Termproxy отправляет сырые данные (binary/text), а не JSON
+                    if (event.data instanceof Blob) {
+                        // Если пришли бинарные данные
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                            const text = new TextDecoder().decode(reader.result);
+                            term.write(text);
+                        };
+                        reader.readAsArrayBuffer(event.data);
+                    } else {
+                        // Если текстовые данные - пишем напрямую
                         term.write(event.data);
                     }
                 };
@@ -251,13 +248,11 @@
                     }, 3000);
                 };
 
-                // Обработка ввода пользователя
+                // Обработка ввода пользователя - отправляем сырые данные в termproxy
                 term.onData((data) => {
                     if (socket && socket.readyState === WebSocket.OPEN) {
-                        socket.send(JSON.stringify({
-                            type: 'input',
-                            data: data
-                        }));
+                        // Termproxy ожидает сырые данные, а не JSON
+                        socket.send(data);
                     }
                 });
 
