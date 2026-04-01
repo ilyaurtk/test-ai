@@ -153,7 +153,15 @@
                         <input type="file" name="image" accept="image/*">
                     </div>
                     <div class="form-group">
-                        <label>Шаблон контейнера Proxmox (VM ID)</label>
+                        <label>Тип ресурса</label>
+                        <select name="resource_type" id="resource-type-select" onchange="toggleResourceType()">
+                            <option value="container">LXC Контейнер</option>
+                            <option value="vm">QEMU Виртуальная машина (VM)</option>
+                        </select>
+                        <small>Выберите тип рабочего места для студентов</small>
+                    </div>
+                    <div class="form-group" id="lxc-template-group">
+                        <label>Шаблон LXC контейнера Proxmox (VM ID)</label>
                         <select name="template_vm_id" id="template-vm-select">
                             <option value="">Не выбрано</option>
                             {% for tmpl in pve_templates %}
@@ -161,6 +169,23 @@
                             {% endfor %}
                         </select>
                         <small>Выберите шаблон LXC контейнера из Proxmox для клонирования</small>
+                    </div>
+                    <div class="form-group" id="qemu-template-group" style="display: none;">
+                        <label>Шаблон QEMU VM Proxmox (VM ID)</label>
+                        <select name="template_qemu_id" id="template-qemu-select">
+                            <option value="">Не выбрано</option>
+                            {% for tmpl in pve_vm_templates %}
+                            <option value="{{ tmpl.vmid }}">{{ tmpl.name }} (VM {{ tmpl.vmid }})</option>
+                            {% endfor %}
+                        </select>
+                        <small>Выберите шаблон виртуальной машины из Proxmox для клонирования. VM поддерживает noVNC для графического доступа.</small>
+                    </div>
+                    <div class="form-group" id="novnc-group" style="display: none;">
+                        <label>
+                            <input type="checkbox" name="novnc_enabled" id="novnc-enabled-checkbox">
+                            Включить noVNC доступ для студентов
+                        </label>
+                        <small>Студенты смогут подключаться к VM через графический интерфейс noVNC в браузере</small>
                     </div>
                     <button type="submit" class="btn btn-primary">Создать курс</button>
                 </form>
@@ -172,6 +197,7 @@
                         <th>ID</th>
                         <th>Название</th>
                         <th>Описание</th>
+                        <th>Тип</th>
                         <th>Шаблон (VM ID)</th>
                         <th>Изображение</th>
                         <th>Действия</th>
@@ -183,7 +209,8 @@
                         <td>{{ course.id }}</td>
                         <td>{{ course.title }}</td>
                         <td>{{ course.description[:50] }}...</td>
-                        <td>{{ course.template_vm_id or 'Нет' }}</td>
+                        <td>{{ 'VM' if course.resource_type == 'vm' else 'Container' }}</td>
+                        <td>{{ course.template_qemu_id or course.template_vm_id or 'Нет' }}</td>
                         <td>{% if course.image_path %}✓{% else %}-{% endif %}</td>
                         <td>
                             <form action="{{ url_for('delete_course', course_id=course.id) }}" method="POST" style="display:inline;">

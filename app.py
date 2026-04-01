@@ -131,6 +131,9 @@ def init_db():
             image_path TEXT,
             container_id TEXT,
             template_vm_id INTEGER,
+            template_qemu_id INTEGER,
+            resource_type TEXT DEFAULT 'container',
+            novnc_enabled INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -169,6 +172,12 @@ def init_db():
     columns = [column[1] for column in cursor.fetchall()]
     if 'is_template' not in columns:
         cursor.execute('ALTER TABLE containers ADD COLUMN is_template INTEGER DEFAULT 0')
+    
+    # Миграция: добавляем столбец novnc_enabled в таблицу courses если он отсутствует
+    cursor.execute("PRAGMA table_info(courses)")
+    course_columns = [column[1] for column in cursor.fetchall()]
+    if 'novnc_enabled' not in course_columns:
+        cursor.execute('ALTER TABLE courses ADD COLUMN novnc_enabled INTEGER DEFAULT 0')
     
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_progress (
@@ -335,11 +344,34 @@ def clone_container(template_vm_id, new_vm_id, name, node=None):
         print(f"Clone failed for template {template_vm_id} -> {new_vm_id} ({name})")
     return result is not None
 
+def clone_vm(template_qemu_id, new_vm_id, name, node=None):
+    """Клонировать QEMU VM из шаблона в Proxmox"""
+    if node is None:
+        node = get_pve_node()
+    endpoint = f"nodes/{node}/qemu/{template_qemu_id}/clone"
+    data = {
+        'newid': new_vm_id,
+        'name': name,  # Для QEMU используем name
+        'full': 1  # Полное клонирование
+    }
+    result = pve_api_request('POST', endpoint, data)
+    if result is None:
+        print(f"Clone failed for VM template {template_qemu_id} -> {new_vm_id} ({name})")
+    return result is not None
+
 def delete_container(vm_id, node=None):
     """Удалить LXC контейнер в Proxmox"""
     if node is None:
         node = get_pve_node()
     endpoint = f"nodes/{node}/lxc/{vm_id}"
+    result = pve_api_request('DELETE', endpoint)
+    return result is not None
+
+def delete_vm(vm_id, node=None):
+    """Удалить QEMU VM в Proxmox"""
+    if node is None:
+        node = get_pve_node()
+    endpoint = f"nodes/{node}/qemu/{vm_id}"
     result = pve_api_request('DELETE', endpoint)
     return result is not None
 
@@ -351,11 +383,27 @@ def start_container(vm_id, node=None):
     result = pve_api_request('POST', endpoint)
     return result is not None
 
+def start_vm(vm_id, node=None):
+    """Запустить QEMU VM в Proxmox"""
+    if node is None:
+        node = get_pve_node()
+    endpoint = f"nodes/{node}/qemu/{vm_id}/status/start"
+    result = pve_api_request('POST', endpoint)
+    return result is not None
+
 def stop_container(vm_id, node=None):
     """Остановить LXC контейнер в Proxmox"""
     if node is None:
         node = get_pve_node()
     endpoint = f"nodes/{node}/lxc/{vm_id}/status/stop"
+    result = pve_api_request('POST', endpoint)
+    return result is not None
+
+def stop_vm(vm_id, node=None):
+    """Остановить QEMU VM в Proxmox"""
+    if node is None:
+        node = get_pve_node()
+    endpoint = f"nodes/{node}/qemu/{vm_id}/status/stop"
     result = pve_api_request('POST', endpoint)
     return result is not None
 
@@ -455,16 +503,16 @@ def get_container_ip(vm_id, node=None):
     app.logger.error(f"Failed to get IP address for VM {vm_id} after {max_attempts} attempts")
     return None
 
-def get_vnc_proxy_url(vm_id, node=None):
-    """Получить информацию для SSH подключения к контейнеру"""
+def get_vnc_proxy_url(vm_id, node=None, resource_type='container'):
+    """Получить информацию для VNC/SSH подключения к контейнеру или VM"""
     if node is None:
         node = get_pve_node()
     
-    # Получаем IP-адрес контейнера
+    # Получаем IP-адрес через API (работает для LXC и QEMU)
     container_ip = get_container_ip(vm_id, node)
     
     if container_ip:
-        # Возвращаем информацию для SSH подключения
+        # Возвращаем информацию для SSH/VNC подключения
         return {
             'host': container_ip,
             'port': 22,
@@ -474,12 +522,16 @@ def get_vnc_proxy_url(vm_id, node=None):
     
     return None
 
-def get_container_console_ticket(vm_id, node=None):
-    """Получить билет для доступа к консоли контейнера через termproxy/xterm.js"""
+def get_container_console_ticket(vm_id, node=None, resource_type='container'):
+    """Получить билет для доступа к консоли через termproxy/xterm.js (LXC) или vncproxy (QEMU)"""
     if node is None:
         node = get_pve_node()
     
-    endpoint = f"nodes/{node}/lxc/{vm_id}/termproxy"
+    # Для LXC используем termproxy, для QEMU - vncproxy
+    if resource_type == 'vm':
+        endpoint = f"nodes/{node}/qemu/{vm_id}/vncproxy"
+    else:
+        endpoint = f"nodes/{node}/lxc/{vm_id}/termproxy"
     
     # Пробуем получить ticket с повторными попытками
     import time
@@ -487,7 +539,7 @@ def get_container_console_ticket(vm_id, node=None):
         try:
             result = pve_api_request('POST', endpoint)
             if result and 'data' in result:
-                app.logger.info(f"Successfully got console ticket for VM {vm_id}")
+                app.logger.info(f"Successfully got console ticket for {resource_type} {vm_id}")
                 return result['data']
             else:
                 app.logger.warning(f"Attempt {attempt+1} to get console ticket returned no data")
@@ -497,7 +549,25 @@ def get_container_console_ticket(vm_id, node=None):
         if attempt < 4:
             time.sleep(2)
     
-    app.logger.error(f"Failed to get console ticket for VM {vm_id} after all attempts")
+    app.logger.error(f"Failed to get console ticket for {resource_type} {vm_id} after all attempts")
+    return None
+
+def get_vm_vnc_proxy_url(vm_id, node=None):
+    """Получить URL для VNC прокси сессии QEMU VM через Proxmox API"""
+    if node is None:
+        node = get_pve_node()
+    
+    endpoint = f"nodes/{node}/qemu/{vm_id}/vncproxy"
+    
+    # Параметры для VNC прокси
+    data = {
+        'websocket': 1  # Запрашиваем WebSocket URL
+    }
+    
+    result = pve_api_request('POST', endpoint, data)
+    if result and 'data' in result:
+        return result['data']
+    
     return None
 
 def get_pve_templates(node=None):
@@ -514,7 +584,27 @@ def get_pve_templates(node=None):
                     'vmid': vm.get('vmid'),
                     'name': vm.get('name', f'VM {vm.get("vmid")}'),
                     'description': vm.get('description', ''),
-                    'status': vm.get('status', 'unknown')
+                    'status': vm.get('status', 'unknown'),
+                    'type': 'lxc'
+                })
+    return templates
+
+def get_pve_vm_templates(node=None):
+    """Получить список шаблонов QEMU VM из Proxmox"""
+    if node is None:
+        node = get_pve_node()
+    endpoint = f"nodes/{node}/qemu"
+    result = pve_api_request('GET', endpoint)
+    templates = []
+    if result and 'data' in result:
+        for vm in result['data']:
+            if vm.get('template') == 1 or vm.get('template') == True:
+                templates.append({
+                    'vmid': vm.get('vmid'),
+                    'name': vm.get('name', f'VM {vm.get("vmid")}'),
+                    'description': vm.get('description', ''),
+                    'status': vm.get('status', 'unknown'),
+                    'type': 'qemu'
                 })
     return templates
 
@@ -698,18 +788,41 @@ def request_terminal(course_id):
     cursor.execute("SELECT * FROM courses WHERE id = ?", (course_id,))
     course = cursor.fetchone()
     
-    if not course or not course['template_vm_id']:
+    if not course:
         conn.close()
-        return jsonify({'error': 'Для этого курса не настроено рабочее место'}), 400
+        return jsonify({'error': 'Курс не найден'}), 404
+    
+    # Определяем тип ресурса и получаем соответствующий шаблон
+    resource_type = course.get('resource_type', 'container')
+    template_vm_id = course.get('template_vm_id')  # Для LXC
+    template_qemu_id = course.get('template_qemu_id')  # Для QEMU VM
+    
+    if resource_type == 'vm' and not template_qemu_id:
+        conn.close()
+        return jsonify({'error': 'Для этого курса не настроено рабочее место (VM)'}), 400
+    elif resource_type != 'vm' and not template_vm_id:
+        conn.close()
+        return jsonify({'error': 'Для этого курса не настроено рабочее место (Container)'}), 400
     
     # Проверяем, есть ли уже активная сессия у пользователя для этого курса
-    cursor.execute("""
-        SELECT ts.*, cont.pve_vm_id, cont.pve_node
-        FROM terminal_sessions ts
-        JOIN containers cont ON ts.container_id = cont.id
-        WHERE ts.user_id = ? AND ts.course_id = ? AND ts.status = 'active'
-        ORDER BY ts.started_at DESC LIMIT 1
-    """, (session['user_id'], course_id))
+    if resource_type == 'vm':
+        # Для VM используем отдельную таблицу или расширяем существующую
+        cursor.execute("""
+            SELECT ts.*, cont.pve_vm_id, cont.pve_node
+            FROM terminal_sessions ts
+            JOIN containers cont ON ts.container_id = cont.id
+            WHERE ts.user_id = ? AND ts.course_id = ? AND ts.status = 'active'
+            ORDER BY ts.started_at DESC LIMIT 1
+        """, (session['user_id'], course_id))
+    else:
+        cursor.execute("""
+            SELECT ts.*, cont.pve_vm_id, cont.pve_node
+            FROM terminal_sessions ts
+            JOIN containers cont ON ts.container_id = cont.id
+            WHERE ts.user_id = ? AND ts.course_id = ? AND ts.status = 'active'
+            ORDER BY ts.started_at DESC LIMIT 1
+        """, (session['user_id'], course_id))
+    
     existing_session = cursor.fetchone()
     
     if existing_session:
@@ -720,71 +833,109 @@ def request_terminal(course_id):
             'message': 'У вас уже есть активная сессия для этого курса'
         })
     
-    # Получаем шаблон контейнера из Proxmox
-    template_vm_id = course['template_vm_id']
     node = get_pve_node()
     
-    # Генерируем новый VM ID для клонированного контейнера
-    # Получаем список всех контейнеров чтобы найти свободный ID
+    # Получаем список всех контейнеров/VM чтобы найти свободный ID
     all_containers = get_pve_containers(node)
     used_ids = [c['vmid'] for c in all_containers]
-    new_vm_id = 1000  # Начальный ID для пользовательских контейнеров
+    new_vm_id = 1000  # Начальный ID для пользовательских ресурсов
     while new_vm_id in used_ids:
         new_vm_id += 1
     
-    # Генерируем уникальное имя контейнера (только lowercase буквы, цифры и дефисы для совместимости с DNS)
-    # Формат должен начинаться с буквы и соответствовать RFC 1123
+    # Генерируем уникальное имя
     random_suffix = uuid.uuid4().hex[:8]
-    container_name = f"u{session['user_id']}-c{course_id}-{random_suffix}"
+    resource_name = f"u{session['user_id']}-c{course_id}-{random_suffix}"
     
-    # Клонируем шаблон
-    app.logger.info(f"Cloning template {template_vm_id} to {new_vm_id}...")
-    if not clone_container(template_vm_id, new_vm_id, container_name, node):
-        conn.close()
-        return jsonify({'error': 'Не удалось создать рабочее место. Проверьте подключение к Proxmox.'}), 500
-    
-    # Ждем пока контейнер будет создан и готов к запуску
-    import time
-    max_wait = 120  # Максимальное время ожидания 120 секунд
-    wait_interval = 3  # Интервал проверки 3 секунды
-    waited = 0
-    
-    while waited < max_wait:
-        time.sleep(wait_interval)
-        waited += wait_interval
+    # Клонируем шаблон в зависимости от типа ресурса
+    if resource_type == 'vm':
+        app.logger.info(f"Cloning QEMU VM template {template_qemu_id} to {new_vm_id}...")
+        if not clone_vm(template_qemu_id, new_vm_id, resource_name, node):
+            conn.close()
+            return jsonify({'error': 'Не удалось создать рабочее место (VM). Проверьте подключение к Proxmox.'}), 500
         
-        # Проверяем статус контейнера
-        status = get_container_status(new_vm_id, node)
+        # Ждем пока VM будет создана
+        import time
+        max_wait = 120
+        wait_interval = 3
+        waited = 0
         
-        # Если контейнер существует и не в состоянии создания, пробуем запустить
-        if status != 'unknown':
-            # Дополнительная задержка для полной готовности файловой системы
-            time.sleep(5)
-            break
+        while waited < max_wait:
+            time.sleep(wait_interval)
+            waited += wait_interval
+            status = get_container_status(new_vm_id, node)  # Используем ту же функцию для статуса
+            if status != 'unknown':
+                time.sleep(5)
+                break
+        
+        # Запускаем VM
+        app.logger.info(f"Starting VM {new_vm_id}...")
+        start_attempts = 3
+        started = False
+        for attempt in range(start_attempts):
+            if start_vm(new_vm_id, node):
+                started = True
+                break
+            time.sleep(2)
+        
+        if not started:
+            conn.close()
+            return jsonify({'error': 'Не удалось запустить рабочее место (VM) после нескольких попыток.'}), 500
+        
+        # Ждем загрузки VM
+        app.logger.info(f"VM {new_vm_id} started. Waiting for console initialization...")
+        time.sleep(20)  # VM通常需要 больше времени для загрузки
+        
+        # Создаем запись в таблице containers
+        cursor.execute("""
+            INSERT INTO containers (name, pve_vm_id, pve_node, status, is_template, course_id)
+            VALUES (?, ?, ?, 'running', 0, ?)
+        """, (resource_name, new_vm_id, node, course_id))
+    else:
+        # LXC container - оригинальная логика
+        template_vm_id = course['template_vm_id']
+        app.logger.info(f"Cloning template {template_vm_id} to {new_vm_id}...")
+        if not clone_container(template_vm_id, new_vm_id, resource_name, node):
+            conn.close()
+            return jsonify({'error': 'Не удалось создать рабочее место. Проверьте подключение к Proxmox.'}), 500
+        
+        # Ждем пока контейнер будет создан и готов к запуску
+        import time
+        max_wait = 120
+        wait_interval = 3
+        waited = 0
+        
+        while waited < max_wait:
+            time.sleep(wait_interval)
+            waited += wait_interval
+            status = get_container_status(new_vm_id, node)
+            if status != 'unknown':
+                time.sleep(5)
+                break
+        
+        # Пробуем запустить контейнер с повторными попытками
+        app.logger.info(f"Starting container {new_vm_id}...")
+        start_attempts = 3
+        started = False
+        for attempt in range(start_attempts):
+            if start_container(new_vm_id, node):
+                started = True
+                break
+            time.sleep(2)
+        
+        if not started:
+            conn.close()
+            return jsonify({'error': 'Не удалось запустить рабочее место после нескольких попыток.'}), 500
+        
+        # Увеличенная пауза после запуска для полной инициализации контейнера и консоли
+        app.logger.info(f"Container {new_vm_id} started. Waiting for console initialization...")
+        time.sleep(15)
+        
+        # Создаем запись в таблице containers для нового контейнера
+        cursor.execute("""
+            INSERT INTO containers (name, pve_vm_id, pve_node, status, is_template, course_id)
+            VALUES (?, ?, ?, 'running', 0, ?)
+        """, (resource_name, new_vm_id, node, course_id))
     
-    # Пробуем запустить контейнер с повторными попытками
-    app.logger.info(f"Starting container {new_vm_id}...")
-    start_attempts = 3
-    started = False
-    for attempt in range(start_attempts):
-        if start_container(new_vm_id, node):
-            started = True
-            break
-        time.sleep(2)
-    
-    if not started:
-        conn.close()
-        return jsonify({'error': 'Не удалось запустить рабочее место после нескольких попыток.'}), 500
-    
-    # Увеличенная пауза после запуска для полной инициализации контейнера и консоли
-    app.logger.info(f"Container {new_vm_id} started. Waiting for console initialization...")
-    time.sleep(15)  # Ждем 15 секунд для полной загрузки служб внутри контейнера
-    
-    # Создаем запись в таблице containers для нового контейнера
-    cursor.execute("""
-        INSERT INTO containers (name, pve_vm_id, pve_node, status, is_template, course_id)
-        VALUES (?, ?, ?, 'running', 0, ?)
-    """, (container_name, new_vm_id, node, course_id))
     container_id = cursor.lastrowid
     
     # Создаем сессию терминала
@@ -1021,8 +1172,9 @@ def admin_dashboard():
     # Загружаем конфигурацию PVE
     pve_config = load_pve_config()
     
-    # Автоматически загружаем шаблоны из Proxmox
+    # Автоматически загружаем шаблоны из Proxmox (LXC и QEMU)
     pve_templates = get_pve_templates()
+    pve_vm_templates = get_pve_vm_templates()
     
     conn.close()
     
@@ -1031,7 +1183,8 @@ def admin_dashboard():
                          courses=courses, 
                          progress_data=progress_data,
                          pve_config=pve_config,
-                         pve_templates=pve_templates)
+                         pve_templates=pve_templates,
+                         pve_vm_templates=pve_vm_templates)
 
 @app.route('/admin/save_pve_config', methods=['POST'])
 @admin_required
@@ -1103,7 +1256,10 @@ def create_course():
     title = request.form['title']
     description = request.form['description']
     content = request.form['content']
-    template_vm_id = request.form.get('template_vm_id')
+    template_vm_id = request.form.get('template_vm_id')  # LXC container template
+    template_qemu_id = request.form.get('template_qemu_id')  # QEMU VM template
+    resource_type = request.form.get('resource_type', 'container')  # 'container' or 'vm'
+    novnc_enabled = 1 if request.form.get('novnc_enabled') == 'on' else 0  # noVNC для VM
     
     image_path = None
     if 'image' in request.files:
@@ -1117,10 +1273,17 @@ def create_course():
     conn = get_db()
     cursor = conn.cursor()
     
-    cursor.execute("""
-        INSERT INTO courses (title, description, content, image_path, template_vm_id)
-        VALUES (?, ?, ?, ?, ?)
-    """, (title, description, content, image_path, template_vm_id if template_vm_id else None))
+    # Определяем какой шаблон использовать в зависимости от типа ресурса
+    if resource_type == 'vm':
+        cursor.execute("""
+            INSERT INTO courses (title, description, content, image_path, template_qemu_id, resource_type, novnc_enabled)
+            VALUES (?, ?, ?, ?, ?, 'vm', ?)
+        """, (title, description, content, image_path, template_qemu_id if template_qemu_id else None, novnc_enabled))
+    else:
+        cursor.execute("""
+            INSERT INTO courses (title, description, content, image_path, template_vm_id, resource_type)
+            VALUES (?, ?, ?, ?, ?, 'container')
+        """, (title, description, content, image_path, template_vm_id if template_vm_id else None))
     
     conn.commit()
     conn.close()
