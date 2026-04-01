@@ -1,40 +1,37 @@
-```
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-.ENV
-.python-version
-
-# Build and distribution artifacts
-build/
-dist/
-*.egg
-*.egg-info/
-*.so
-*.whl
-
-# Logs
-*.log
+# Database files
+*.db
 
 # Environment files
 .env
 .env.local
 *.env.*
 
-# Editor/IDE
+# Logs
+*.log
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build artifacts
+dist/
+build/
+*.so
+*.dylib
+*.dll
+
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
-*.tmp
 
-# OS generated files
+# OS
 .DS_Store
 Thumbs.db
 
@@ -42,16 +39,109 @@ Thumbs.db
 .coverage
 htmlcov/
 .coverage.*
-.cache
+.nyc_output/
+istanbul/
+
+# Python specific
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.nosetests
 .pytest_cache/
 .mypy_cache/
+.hypothesis/
 
-# Dependencies
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Documentation
-docs/_build/
-```
+# General
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+.directory
+*.nib
+*~
+.DS_Store?
+ehthumbs.db
+Icon?
+Network Trash Folder
+Temporary Items
+.Trashes
+*.core
+*.rbc
+*.bak
+*.log
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+*.db3
+*.mdb
+*.accdb
+*.fdb
+*.gdb
+*.ndb
+*.sdf
+*.dbf
+*.dbase
+*.fox
+*.dbx
+*.mdbx
+*.sqlite-shm
+*.sqlite-wal
+*.db-journal
+*.fdb-journal
+*.gdb-journal
+*.ndb-journal
+*.sdf-journal
+*.dbf-journal
+*.dbase-journal
+*.fox-journal
+*.dbx-journal
+*.mdbx-journal
+*.sqlite3-journal
+*.db3-journal
+*.mdb-journal
+*.accdb-journal
+*.fdb-journal
+*.gdb-journal
+*.ndb-journal
+*.sdf-journal
+*.dbf-journal
+*.dbase-journal
+*.fox-journal
+*.dbx-journal
+*.mdbx-journal
+*.sqlite3-shm
+*.sqlite3-wal
+*.db-shm
+*.db-wal
+*.db3-shm
+*.db3-wal
+*.mdb-shm
+*.mdb-wal
+*.accdb-shm
+*.accdb-wal
+*.fdb-shm
+*.fdb-wal
+*.gdb-shm
+*.gdb-wal
+*.ndb-shm
+*.ndb-wal
+*.sdf-shm
+*.sdf-wal
+*.dbf-shm
+*.dbf-wal
+*.dbase-shm
+*.dbase-wal
+*.fox-shm
+*.fox-wal
+*.dbx-shm
+*.dbx-wal
+*.mdbx-shm
+*.mdbx-wal
