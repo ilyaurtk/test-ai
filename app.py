@@ -736,7 +736,6 @@ def request_terminal(course_id):
     
     # Клонируем шаблон
     app.logger.info(f"Cloning template {template_vm_id} to {new_vm_id}...")
-    socketio.emit('progress', {'step': 1, 'total': 4, 'message': 'Клонирование контейнера...'}, room=flask_request.sid)
     if not clone_container(template_vm_id, new_vm_id, container_name, node):
         conn.close()
         flash('Не удалось создать рабочее место. Проверьте подключение к Proxmox.', 'error')
@@ -763,7 +762,6 @@ def request_terminal(course_id):
     
     # Пробуем запустить контейнер с повторными попытками
     app.logger.info(f"Starting container {new_vm_id}...")
-    socketio.emit('progress', {'step': 2, 'total': 4, 'message': 'Запуск контейнера...'}, room=flask_request.sid)
     start_attempts = 3
     started = False
     for attempt in range(start_attempts):
@@ -779,11 +777,9 @@ def request_terminal(course_id):
     
     # Увеличенная пауза после запуска для полной инициализации контейнера и консоли
     app.logger.info(f"Container {new_vm_id} started. Waiting for console initialization...")
-    socketio.emit('progress', {'step': 3, 'total': 4, 'message': 'Ожидание готовности...'}, room=flask_request.sid)
     time.sleep(15)  # Ждем 15 секунд для полной загрузки служб внутри контейнера
     
     # Получаем IP адрес
-    socketio.emit('progress', {'step': 4, 'total': 4, 'message': 'Получение IP адреса...'}, room=flask_request.sid)
     
     # Создаем запись в таблице containers для нового контейнера
     cursor.execute("""
@@ -800,11 +796,6 @@ def request_terminal(course_id):
     """, (session['user_id'], course_id, session_token, container_id))
     
     conn.commit()
-    
-    # Устанавливаем статус сессии как ready
-    sid = flask_request.sid
-    session_status[sid] = 'ready'
-    socketio.emit('progress', {'step': 4, 'total': 4, 'message': 'Готово! Подключение...'}, room=sid)
     
     # Обновляем время последнего доступа
     cursor.execute("""
