@@ -359,7 +359,7 @@ def get_container_status(vm_id, node=None):
     return 'unknown'
 
 def get_vnc_proxy_url(vm_id, node=None):
-    """Получить URL для VNC прокси сессии через Proxmox API"""
+    """Получить URL для терминала через termproxy (LXC контейнеры)"""
     if node is None:
         node = get_pve_node()
     
@@ -374,30 +374,14 @@ def get_vnc_proxy_url(vm_id, node=None):
         port = PVE_PORT
         verify_ssl = PVE_VERIFY_SSL
     
-    endpoint = f"nodes/{node}/lxc/{vm_id}/proxy/vncwebsocket"
-    data = {
-        'port': 5900,
-        'vncticket': ''
-    }
-    result = pve_api_request('POST', endpoint, data)
-    if result and 'data' in result:
-        # Формируем полный WebSocket URL для noVNC
-        ticket = result['data'].get('ticket', '')
-        vnc_port = result['data'].get('port', 5900)
-        
-        # Для LXC контейнеров Proxmox использует termproxy вместо прямого VNC
-        # Получаем termproxy ticket
-        console_result = get_container_console_ticket(vm_id, node)
-        if console_result:
-            term_port = console_result.get('port', port)
-            term_ticket = console_result.get('ticket', '')
-            # Формируем WebSocket URL для termproxy
-            protocol = 'wss' if not verify_ssl or port == 443 else 'ws'
-            return f"{protocol}://{host}:{term_port}/term?ticket={urllib.parse.quote(term_ticket)}"
-        
-        # Fallback к стандартному VNC
-        protocol = 'wss' if not verify_ssl or port == 443 else 'ws'
-        return f"{protocol}://{host}:{vnc_port}?ticket={urllib.parse.quote(ticket)}"
+    # Для LXC контейнеров используем только termproxy
+    console_result = get_container_console_ticket(vm_id, node)
+    if console_result:
+        term_port = console_result.get('port', port)
+        term_ticket = console_result.get('ticket', '')
+        # Формируем WebSocket URL для termproxy
+        protocol = 'wss' if verify_ssl else 'ws'
+        return f"{protocol}://{host}:{term_port}/term?ticket={urllib.parse.quote(term_ticket)}"
     
     return None
 
