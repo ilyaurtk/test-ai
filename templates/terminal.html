@@ -205,8 +205,7 @@
                     // Отправляем начальный размер в termproxy (сырой формат)
                     if (fitAddon) {
                         fitAddon.fit();
-                        // Termproxy не требует явного resize при подключении, но можно отправить
-                        // resize-команду если нужно: \x1b[8;rows;colst (ANSI escape sequence)
+                        // Termproxy ожидает ANSI escape sequence для изменения размера
                         const resizeCmd = `\x1b[8;${term.rows};${term.cols}t`;
                         socket.send(resizeCmd);
                     }
@@ -222,6 +221,10 @@
                             term.write(text);
                         };
                         reader.readAsArrayBuffer(event.data);
+                    } else if (event.data instanceof ArrayBuffer) {
+                        // Если ArrayBuffer напрямую
+                        const text = new TextDecoder().decode(event.data);
+                        term.write(text);
                     } else {
                         // Если текстовые данные - пишем напрямую
                         term.write(event.data);
