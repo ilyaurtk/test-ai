@@ -234,6 +234,8 @@
 
                 socket.on('connect', () => {
                     console.log('Connected to Socket.IO server');
+                    // Скрываем прогресс бар при подключении
+                    document.getElementById('progress-container').style.display = 'none';
                     // Инициализируем терминальную сессию
                     socket.emit('terminal_init', { session_token: sessionToken });
                 });
@@ -242,12 +244,21 @@
                     if (data.output) {
                         term.write(data.output);
                         updateStatus('connected');
+                        // Скрываем loading сообщение после получения первого вывода
+                        document.getElementById('loading').style.display = 'none';
                     }
                     if (data.error) {
                         console.error('Terminal error:', data.error);
                         term.write(`\r\n\x1b[31mОшибка: ${data.error}\x1b[0m\r\n`);
                         updateStatus('disconnected');
                     }
+                });
+
+                // Обработка сигнала готовности терминала
+                socket.on('terminal_ready', () => {
+                    console.log('Terminal ready');
+                    updateStatus('connected');
+                    document.getElementById('loading').style.display = 'none';
                 });
 
                 socket.on('disconnect', () => {
@@ -267,14 +278,17 @@
                 socket.on('session_finished', (data) => {
                     console.log('Session finished:', data.message);
                     updateStatus('disconnected');
-                    document.getElementById('loading').innerHTML = '<span style="color: #ff4444;">Сессия завершена. Повторный вход невозможен.</span>';
+                    document.getElementById('loading').innerHTML = '<span style="color: #ff4444;">Сессия завершена. Перенаправление...</span>';
                     document.getElementById('loading').style.display = 'block';
                     // Блокируем терминал
                     if (term) {
                         term.write('\r\n\r\n\x1b[31m=== СЕССИЯ ЗАВЕРШЕНА ===\x1b[0m\r\n');
                         term.write('\x1b[31mКонтейнер был удален. Для продолжения работы создайте новую сессию.\x1b[0m\r\n');
-                        term.write('\x1b[31mПерезагрузите страницу или вернитесь к курсу.\x1b[0m\r\n');
                     }
+                    // Перенаправляем на страницу курса через 2 секунды
+                    setTimeout(() => {
+                        window.location.href = '{{ url_for("view_course", course_id=session_data.course_id) }}';
+                    }, 2000);
                 });
 
                 // Обработка ввода пользователя
