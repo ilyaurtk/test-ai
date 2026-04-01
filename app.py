@@ -370,7 +370,7 @@ def get_container_ip(vm_id, node=None):
         node = get_pve_node()
     
     # Делаем несколько попыток получения IP с интервалом в 2 секунды
-    max_attempts = 10
+    max_attempts = 30
     for attempt in range(max_attempts):
         app.logger.info(f"Attempt {attempt+1}/{max_attempts} to get IP for VM {vm_id}")
         
@@ -378,32 +378,60 @@ def get_container_ip(vm_id, node=None):
         endpoint = f"nodes/{node}/lxc/{vm_id}/interfaces"
         result = pve_api_request('GET', endpoint)
         
+        app.logger.info(f"API Response for interfaces: {result}")
+        
         if result and 'data' in result:
             interfaces = result['data']
             app.logger.info(f"Got interfaces data: {interfaces}")
-            for iface in interfaces:
-                # Ищем активные интерфейсы с IPv4 адресами (кроме lo)
-                if iface.get('name') != 'lo' and iface.get('running'):
-                    ipaddr = iface.get('ip-address')
-                    if ipaddr and ':' not in ipaddr:  # Только IPv4
-                        app.logger.info(f"Found IP address: {ipaddr}")
-                        return ipaddr
+            app.logger.info(f"Interfaces type: {type(interfaces)}")
+            
+            # Обработка разных форматов ответа
+            if isinstance(interfaces, list):
+                for iface in interfaces:
+                    app.logger.info(f"Checking interface: {iface}")
+                    # Ищем активные интерфейсы с IPv4 адресами (кроме lo)
+                    iface_name = iface.get('name', '')
+                    if iface_name == 'lo':
+                        continue
                     
-                    # Проверяем альтернативный формат (список IP)
+                    # Проверяем ip-addresses (список словарей) - основной формат
                     ips = iface.get('ip-addresses', [])
+                    app.logger.info(f"Found ip-addresses: {ips}")
+                    
+                    if isinstance(ips, list):
+                        for ip_info in ips:
+                            if isinstance(ip_info, dict):
+                                ip = ip_info.get('ip-address')
+                                ip_type = ip_info.get('ip-address-type', 'inet')
+                                app.logger.info(f"Checking IP: {ip}, type: {ip_type}")
+                                if ip and ':' not in ip and ip_type == 'inet':  # Только IPv4
+                                    app.logger.info(f"SUCCESS: Found valid IPv4 address: {ip}")
+                                    return ip
+                    
+                    # Резервная проверка для ip-address (единственное число)
+                    ipaddr = iface.get('ip-address')
+                    if ipaddr and ':' not in ipaddr:
+                        app.logger.info(f"Found IP address (single): {ipaddr}")
+                        return ipaddr
+                        
+            elif isinstance(interfaces, dict):
+                # Если пришел один интерфейс вместо списка
+                app.logger.info(f"Single interface received: {interfaces}")
+                ips = interfaces.get('ip-addresses', [])
+                if isinstance(ips, list):
                     for ip_info in ips:
                         if isinstance(ip_info, dict):
                             ip = ip_info.get('ip-address')
-                            if ip and ':' not in ip:  # Только IPv4
-                                app.logger.info(f"Found IP address in list: {ip}")
+                            if ip and ':' not in ip:
+                                app.logger.info(f"Found IP address in single interface: {ip}")
                                 return ip
         
         # Если не нашли через interfaces, пробуем конфиг (статический IP)
         endpoint = f"nodes/{node}/lxc/{vm_id}/config"
-        result = pve_api_request('GET', endpoint)
+        config_result = pve_api_request('GET', endpoint)
         
-        if result and 'data' in result:
-            config = result['data']
+        if config_result and 'data' in config_result:
+            config = config_result['data']
             app.logger.info(f"Got config data: {config}")
             for key in config:
                 if key.startswith('net'):
@@ -414,7 +442,7 @@ def get_container_ip(vm_id, node=None):
                         app.logger.info(f"Found static IP in config: {ip_addr}")
                         return ip_addr
         
-        app.logger.warning(f"Attempt {attempt+1} failed to find IP address")
+        app.logger.warning(f"Attempt {attempt+1} failed to find valid IPv4 address")
         if attempt < max_attempts - 1:
             import time
             time.sleep(2)
