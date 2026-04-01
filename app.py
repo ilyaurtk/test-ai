@@ -365,45 +365,61 @@ def get_container_status(vm_id, node=None):
     return 'unknown'
 
 def get_container_ip(vm_id, node=None):
-    """Получить IP-адрес контейнера из Proxmox через API (включая DHCP)"""
+    """Получить IP-адрес контейнера из Proxmox через API (включая DHCP) с повторными попытками"""
     if node is None:
         node = get_pve_node()
     
-    # Пробуем получить IP через эндпоинт интерфейсов (работает для DHCP)
-    endpoint = f"nodes/{node}/lxc/{vm_id}/interfaces"
-    result = pve_api_request('GET', endpoint)
+    # Делаем несколько попыток получения IP с интервалом в 2 секунды
+    max_attempts = 10
+    for attempt in range(max_attempts):
+        app.logger.info(f"Attempt {attempt+1}/{max_attempts} to get IP for VM {vm_id}")
+        
+        # Пробуем получить IP через эндпоинт интерфейсов (работает для DHCP)
+        endpoint = f"nodes/{node}/lxc/{vm_id}/interfaces"
+        result = pve_api_request('GET', endpoint)
+        
+        if result and 'data' in result:
+            interfaces = result['data']
+            app.logger.info(f"Got interfaces data: {interfaces}")
+            for iface in interfaces:
+                # Ищем активные интерфейсы с IPv4 адресами (кроме lo)
+                if iface.get('name') != 'lo' and iface.get('running'):
+                    ipaddr = iface.get('ip-address')
+                    if ipaddr and ':' not in ipaddr:  # Только IPv4
+                        app.logger.info(f"Found IP address: {ipaddr}")
+                        return ipaddr
+                    
+                    # Проверяем альтернативный формат (список IP)
+                    ips = iface.get('ip-addresses', [])
+                    for ip_info in ips:
+                        if isinstance(ip_info, dict):
+                            ip = ip_info.get('ip-address')
+                            if ip and ':' not in ip:  # Только IPv4
+                                app.logger.info(f"Found IP address in list: {ip}")
+                                return ip
+        
+        # Если не нашли через interfaces, пробуем конфиг (статический IP)
+        endpoint = f"nodes/{node}/lxc/{vm_id}/config"
+        result = pve_api_request('GET', endpoint)
+        
+        if result and 'data' in result:
+            config = result['data']
+            app.logger.info(f"Got config data: {config}")
+            for key in config:
+                if key.startswith('net'):
+                    net_config = config[key]
+                    if 'ip=' in net_config:
+                        ip_part = net_config.split('ip=')[1].split(',')[0]
+                        ip_addr = ip_part.split('/')[0]
+                        app.logger.info(f"Found static IP in config: {ip_addr}")
+                        return ip_addr
+        
+        app.logger.warning(f"Attempt {attempt+1} failed to find IP address")
+        if attempt < max_attempts - 1:
+            import time
+            time.sleep(2)
     
-    if result and 'data' in result:
-        interfaces = result['data']
-        for iface in interfaces:
-            # Ищем активные интерфейсы с IPv4 адресами (кроме lo)
-            if iface.get('name') != 'lo' and iface.get('running'):
-                ipaddr = iface.get('ip-address')
-                if ipaddr and ':' not in ipaddr:  # Только IPv4
-                    return ipaddr
-                
-                # Проверяем альтернативный формат (список IP)
-                ips = iface.get('ip-addresses', [])
-                for ip_info in ips:
-                    if isinstance(ip_info, dict):
-                        ip = ip_info.get('ip-address')
-                        if ip and ':' not in ip:  # Только IPv4
-                            return ip
-    
-    # Если не нашли через interfaces, пробуем конфиг (статический IP)
-    endpoint = f"nodes/{node}/lxc/{vm_id}/config"
-    result = pve_api_request('GET', endpoint)
-    
-    if result and 'data' in result:
-        config = result['data']
-        for key in config:
-            if key.startswith('net'):
-                net_config = config[key]
-                if 'ip=' in net_config:
-                    ip_part = net_config.split('ip=')[1].split(',')[0]
-                    ip_addr = ip_part.split('/')[0]
-                    return ip_addr
-    
+    app.logger.error(f"Failed to get IP address for VM {vm_id} after {max_attempts} attempts")
     return None
 
 def get_vnc_proxy_url(vm_id, node=None):
