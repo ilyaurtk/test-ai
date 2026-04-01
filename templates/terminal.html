@@ -6,7 +6,114 @@
     <title>Терминал - {{ session_data.course_title }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <!-- Подключаем noVNC -->
-    <script src="https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/lib/rfb.js"></script>
+    <script type="module">
+        import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/lib/rfb.js';
+
+        // Получаем данные из шаблона
+        const vmId = {{ session_data.pve_vm_id }};
+        const node = '{{ session_data.pve_node }}';
+        const vncProxyUrl = '{{ vnc_proxy_url|safe }}';
+
+        let rfb = null;
+        let isConnected = false;
+
+        // Обновляем статус подключения
+        function updateStatus(status) {
+            const statusEl = document.getElementById('connectionStatus');
+            statusEl.classList.remove('status-connected', 'status-disconnected', 'status-connecting');
+
+            switch(status) {
+                case 'connected':
+                    statusEl.classList.add('status-connected');
+                    isConnected = true;
+                    document.getElementById('loading').style.display = 'none';
+                    break;
+                case 'disconnected':
+                    statusEl.classList.add('status-disconnected');
+                    isConnected = false;
+                    break;
+                case 'connecting':
+                    statusEl.classList.add('status-connecting');
+                    isConnected = false;
+                    break;
+            }
+        }
+
+        // Инициализация noVNC
+        function initNoVNC() {
+            updateStatus('connecting');
+
+            if (!vncProxyUrl) {
+                document.getElementById('loading').innerHTML = '<span style="color: #ff4444;">Ошибка: не удалось получить VNC прокси URL</span>';
+                updateStatus('disconnected');
+                return;
+            }
+
+            try {
+                // Создаем RFB объект noVNC
+                const screenEl = document.getElementById('noVNC_screen');
+
+                rfb = new RFB(screenEl, vncProxyUrl, {
+                    credentials: {
+                        password: ''
+                    },
+                    reconnect: true,
+                    reconnectDelay: 3000,
+                    scaleViewport: true,
+                    resizeSession: true
+                });
+
+                // Обработчики событий
+                rfb.addEventListener('connect', () => {
+                    console.log('Connected to VNC');
+                    updateStatus('connected');
+                    document.getElementById('loading').innerHTML = '<span style="color: #00ff41;">✓ Подключено</span>';
+                });
+
+                rfb.addEventListener('disconnect', (detail) => {
+                    console.log('Disconnected from VNC:', detail);
+                    updateStatus('disconnected');
+                    document.getElementById('loading').innerHTML = '<span style="color: #ffaa00;">Отключено. Переподключение...</span>';
+                    document.getElementById('loading').style.display = 'block';
+                });
+
+                rfb.addEventListener('credentialsrequired', () => {
+                    console.log('Credentials required');
+                });
+
+                rfb.addEventListener('securityfailure', (detail) => {
+                    console.error('Security failure:', detail);
+                    document.getElementById('loading').innerHTML = `<span style="color: #ff4444;">Ошибка безопасности: ${detail.detail}</span>`;
+                    updateStatus('disconnected');
+                });
+
+                rfb.addEventListener('serververification', (detail) => {
+                    console.log('Server verification:', detail);
+                });
+
+            } catch (error) {
+                console.error('Error initializing noVNC:', error);
+                document.getElementById('loading').innerHTML = `<span style="color: #ff4444;">Ошибка инициализации: ${error.message}</span>`;
+                updateStatus('disconnected');
+            }
+        }
+
+        // Запускаем при загрузке страницы
+        window.addEventListener('load', () => {
+            console.log('Initializing noVNC terminal...');
+            console.log('VM ID:', vmId);
+            console.log('Node:', node);
+            console.log('VNC Proxy URL:', vncProxyUrl);
+            initNoVNC();
+        });
+
+        // Обработка изменения размера окна
+        window.addEventListener('resize', () => {
+            if (rfb && isConnected) {
+                rfb.scaleViewport();
+            }
+        });
+    </script>
     <style>
         .terminal-container {
             height: calc(100vh - 60px);
@@ -93,7 +200,7 @@
             </div>
             <a href="{{ url_for('view_course', course_id=session_data.course_id) }}" class="btn btn-small">Завершить сессию</a>
         </div>
-        
+
         <div class="terminal-body">
             <div id="noVNC_container">
                 <div id="noVNC_screen">
@@ -105,112 +212,5 @@
             ⚠️ Терминал подключён к контейнеру Proxmox VE (VM {{ session_data.pve_vm_id }}). Все изменения сохраняются в изолированной среде.
         </div>
     </div>
-
-    <script>
-        // Получаем данные из шаблона
-        const vmId = {{ session_data.pve_vm_id }};
-        const node = '{{ session_data.pve_node }}';
-        const vncProxyUrl = '{{ vnc_proxy_url|safe }}';
-        
-        let rfb = null;
-        let isConnected = false;
-        
-        // Обновляем статус подключения
-        function updateStatus(status) {
-            const statusEl = document.getElementById('connectionStatus');
-            statusEl.classList.remove('status-connected', 'status-disconnected', 'status-connecting');
-            
-            switch(status) {
-                case 'connected':
-                    statusEl.classList.add('status-connected');
-                    isConnected = true;
-                    document.getElementById('loading').style.display = 'none';
-                    break;
-                case 'disconnected':
-                    statusEl.classList.add('status-disconnected');
-                    isConnected = false;
-                    break;
-                case 'connecting':
-                    statusEl.classList.add('status-connecting');
-                    isConnected = false;
-                    break;
-            }
-        }
-        
-        // Инициализация noVNC
-        function initNoVNC() {
-            updateStatus('connecting');
-            
-            if (!vncProxyUrl) {
-                document.getElementById('loading').innerHTML = '<span style="color: #ff4444;">Ошибка: не удалось получить VNC прокси URL</span>';
-                updateStatus('disconnected');
-                return;
-            }
-            
-            try {
-                // Создаем RFB объект noVNC
-                const screenEl = document.getElementById('noVNC_screen');
-                
-                rfb = new RFB(screenEl, vncProxyUrl, {
-                    credentials: {
-                        password: ''
-                    },
-                    reconnect: true,
-                    reconnectDelay: 3000,
-                    scaleViewport: true,
-                    resizeSession: true
-                });
-                
-                // Обработчики событий
-                rfb.addEventListener('connect', () => {
-                    console.log('Connected to VNC');
-                    updateStatus('connected');
-                    document.getElementById('loading').innerHTML = '<span style="color: #00ff41;">✓ Подключено</span>';
-                });
-                
-                rfb.addEventListener('disconnect', (detail) => {
-                    console.log('Disconnected from VNC:', detail);
-                    updateStatus('disconnected');
-                    document.getElementById('loading').innerHTML = '<span style="color: #ffaa00;">Отключено. Переподключение...</span>';
-                    document.getElementById('loading').style.display = 'block';
-                });
-                
-                rfb.addEventListener('credentialsrequired', () => {
-                    console.log('Credentials required');
-                });
-                
-                rfb.addEventListener('securityfailure', (detail) => {
-                    console.error('Security failure:', detail);
-                    document.getElementById('loading').innerHTML = `<span style="color: #ff4444;">Ошибка безопасности: ${detail.detail}</span>`;
-                    updateStatus('disconnected');
-                });
-                
-                rfb.addEventListener('serververification', (detail) => {
-                    console.log('Server verification:', detail);
-                });
-                
-            } catch (error) {
-                console.error('Error initializing noVNC:', error);
-                document.getElementById('loading').innerHTML = `<span style="color: #ff4444;">Ошибка инициализации: ${error.message}</span>`;
-                updateStatus('disconnected');
-            }
-        }
-        
-        // Запускаем при загрузке страницы
-        window.addEventListener('load', () => {
-            console.log('Initializing noVNC terminal...');
-            console.log('VM ID:', vmId);
-            console.log('Node:', node);
-            console.log('VNC Proxy URL:', vncProxyUrl);
-            initNoVNC();
-        });
-        
-        // Обработка изменения размера окна
-        window.addEventListener('resize', () => {
-            if (rfb && isConnected) {
-                rfb.scaleViewport();
-            }
-        });
-    </script>
 </body>
 </html>
