@@ -237,7 +237,7 @@
                 {% else %}
                 <div id="placeholderInfo" class="terminal-info">
                     <h3>Информация о рабочем месте</h3>
-                    {% if course.template_vm_id %}
+                    {% if course.template_vm_id or course.template_qemu_id %}
                     <p>Для этого курса настроено рабочее место на основе шаблона Proxmox VE.</p>
                     <p>Нажмите «Запросить рабочее место» для запуска вашей персональной среды.</p>
                     {% else %}
