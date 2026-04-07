@@ -573,7 +573,11 @@ def get_container_console_ticket(vm_id, node=None, resource_type='container'):
     return None
 
 def get_vm_vnc_websocket_url(vm_id, node=None):
-    """Получить WebSocket URL для noVNC подключения к QEMU VM через Proxmox API"""
+    """Получить URL для noVNC консоли VM через Proxmox API
+    
+    В новых версиях Proxmox VE endpoint vncwebsocket не требует POST запроса.
+    Достаточно получить тикет через vncproxy и сформировать WebSocket URL напрямую.
+    """
     if node is None:
         node = get_pve_node()
     
@@ -588,15 +592,7 @@ def get_vm_vnc_websocket_url(vm_id, node=None):
         port = PVE_PORT
         verify_ssl = PVE_VERIFY_SSL
     
-    endpoint = f"nodes/{node}/qemu/{vm_id}/vncwebsocket"
-    
-    # Параметры для VNC WebSocket
-    data = {
-        'port': 5900,  # Стандартный порт VNC
-        'vncticket': ''  # Будет заполнен после получения тикета
-    }
-    
-    # Сначала получаем обычный vncproxy тикет
+    # Получаем vncproxy тикет - это единственный необходимый вызов API
     proxy_endpoint = f"nodes/{node}/qemu/{vm_id}/vncproxy"
     proxy_data = {'websocket': 1}
     proxy_result = pve_api_request('POST', proxy_endpoint, proxy_data)
@@ -609,36 +605,20 @@ def get_vm_vnc_websocket_url(vm_id, node=None):
     ticket = ticket_data.get('ticket', '')
     port_vnc = ticket_data.get('port', 5900)
     
-    # Теперь получаем WebSocket URL
-    result = pve_api_request('POST', endpoint, {'port': port_vnc})
+    # Формируем WebSocket URL для noVNC напрямую из данных vncproxy
+    # Формат: wss://host:port/api2/json/nodes/node/qemu/vmid/vncwebsocket?port=PORT&vncticket=TICKET
+    ws_url = f"wss://{host}:{port}/api2/json/nodes/{node}/qemu/{vm_id}/vncwebsocket?port={port_vnc}&vncticket={urllib.parse.quote(ticket)}"
     
-    if result and 'data' in result:
-        ws_data = result['data']
-        # Формируем полный WebSocket URL для noVNC
-        ws_url = f"wss://{host}:{port}/api2/json/nodes/{node}/qemu/{vm_id}/vncwebsocket?port={port_vnc}&vncticket={urllib.parse.quote(ticket)}"
-        
-        return {
-            'websocket_url': ws_url,
-            'ticket': ticket,
-            'port': port_vnc,
-            'host': host,
-            'vmid': vm_id,
-            'node': node
-        }
+    app.logger.info(f"Generated noVNC WebSocket URL for VM {vm_id}: port={port_vnc}")
     
-    # Альтернативный вариант: используем данные из vncproxy напрямую
-    if 'websocket' in ticket_data:
-        ws_url = f"wss://{host}:{port}{ticket_data['websocket']}"
-        return {
-            'websocket_url': ws_url,
-            'ticket': ticket,
-            'port': port_vnc,
-            'host': host,
-            'vmid': vm_id,
-            'node': node
-        }
-    
-    return None
+    return {
+        'websocket_url': ws_url,
+        'ticket': ticket,
+        'port': port_vnc,
+        'host': host,
+        'vmid': vm_id,
+        'node': node
+    }
 
 def get_pve_templates(node=None):
     """Получить список шаблонов LXC из Proxmox"""
@@ -1176,11 +1156,20 @@ def terminal(session_token):
     # Получаем URL для VNC прокси сессии через Proxmox API
     vnc_proxy_url = get_vnc_proxy_url(session_data['pve_vm_id'], session_data['pve_node'], resource_type)
     
+    # Загружаем конфигурацию Proxmox из БД для передачи в шаблон
+    config = load_pve_config()
+    if config:
+        pve_host = config['host']
+        pve_port = config['port']
+    else:
+        pve_host = PVE_HOST
+        pve_port = PVE_PORT
+    
     return render_template('terminal.html', 
                          session_data=session_data, 
                          session_token=session_token,
-                         PVE_HOST=PVE_HOST, 
-                         PVE_PORT=PVE_PORT,
+                         PVE_HOST=pve_host, 
+                         PVE_PORT=pve_port,
                          vnc_proxy_url=vnc_proxy_url)
 
 @app.route('/api/terminal/<session_token>/exec', methods=['POST'])
