@@ -254,14 +254,8 @@
                     
                     // Открываем noVNC консоль Proxmox в новом окне с правильными параметрами
                     setTimeout(() => {
-                        const pveHost = data.host || '{{ PVE_HOST }}';
-                        const pvePort = {{ PVE_PORT }};
-                        const vmId = data.vm_id;
-                        const node = data.node;
-                        
-                        // Формируем URL для встроенной noVNC консоли Proxmox
-                        // Используем формат: https://host:port/?console=kvm&novnc=1&vmid=ID&node=NODE
-                        const novncUrl = `https://${pveHost}:${pvePort}/?console=kvm&novnc=1&vmid=${vmId}&node=${node}&resize=off`;
+                        // Используем URL, переданный сервером напрямую
+                        const novncUrl = data.novnc_url;
                         
                         console.log('Opening noVNC URL:', novncUrl);
                         window.open(novncUrl, '_blank', 'width=1024,height=768');

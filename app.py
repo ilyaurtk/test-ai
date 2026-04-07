@@ -1634,21 +1634,24 @@ def handle_terminal_init(data):
     
     # Для VM используем noVNC, для LXC - SSH
     if resource_type == 'vm':
-        # Для VM получаем WebSocket URL для noVNC
-        vnc_ws_info = get_vm_vnc_websocket_url(session_data['pve_vm_id'], session_data['pve_node'])
+        # Для VM генерируем прямую ссылку на noVNC Proxmox без вызова API
+        # Это позволяет избежать ошибок блокировки и таймаутов
+        config = load_pve_config()
+        pve_host = config['host'] if config else PVE_HOST
+        pve_port = config['port'] if config else PVE_PORT
         
-        if not vnc_ws_info:
-            emit('terminal_output', {'error': 'Не удалось получить доступ к консоли VM'})
-            return
+        # Формируем URL для встроенной noVNC консоли Proxmox
+        novnc_url = f"https://{pve_host}:{pve_port}/?console=kvm&novnc=1&vmid={session_data['pve_vm_id']}&node={session_data['pve_node']}&resize=scale"
         
-        # Для VM возвращаем сигнал с WebSocket URL для noVNC
+        app.logger.info(f"Generated noVNC URL for VM {session_data['pve_vm_id']}: {novnc_url}")
+        
+        # Для VM возвращаем сигнал с URL для noVNC
         emit('novnc_required', {
             'vm_id': session_data['pve_vm_id'],
             'node': session_data['pve_node'],
-            'websocket_url': vnc_ws_info.get('websocket_url', ''),
-            'ticket': vnc_ws_info.get('ticket', ''),
-            'port': vnc_ws_info.get('port', 5900),
-            'host': vnc_ws_info.get('host', PVE_HOST),
+            'novnc_url': novnc_url,
+            'host': pve_host,
+            'port': pve_port,
             'message': 'Для виртуальных машин используется noVNC консоль. Подключение...'
         })
         return
