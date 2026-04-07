@@ -252,21 +252,40 @@
                     document.getElementById('loading').innerHTML = `<span style="color: #00ff41;">${data.message}</span>`;
                     document.getElementById('loading').style.display = 'block';
                     
-                    // Перенаправляем на страницу noVNC прокси Proxmox
-                    const pveHost = '{{ PVE_HOST }}';
-                    const pvePort = {{ PVE_PORT }};
-                    const vmId = data.vm_id;
-                    const node = data.node;
-                    
-                    // Формируем URL для noVNC через Proxmox
-                    // Используем vncproxy для получения билета и подключения
-                    setTimeout(() => {
-                        // Открываем noVNC в новом окне или перенаправляем
-                        const novncUrl = `https://${pveHost}:${pvePort}/vncproxy/?vmid=${vmId}&node=${node}`;
-                        window.open(novncUrl, '_blank');
-                        // Или можно перенаправить пользователя
-                        // window.location.href = novncUrl;
-                    }, 2000);
+                    // Если есть WebSocket URL, подключаемся через noVNC embedded
+                    if (data.websocket_url) {
+                        // Создаем iframe с noVNC или перенаправляем на страницу с noVNC
+                        setTimeout(() => {
+                            // Вариант 1: Открываем Proxmox VNC консоль в новом окне
+                            const pveHost = data.host || '{{ PVE_HOST }}';
+                            const pvePort = {{ PVE_PORT }};
+                            const vmId = data.vm_id;
+                            const node = data.node;
+                            const ticket = data.ticket || '';
+                            
+                            // Используем стандартный noVNC интерфейс Proxmox
+                            const novncUrl = `https://${pveHost}:${pvePort}/?console=kvm&novnc=1&vmid=${vmId}&node=${node}&resize=off`;
+                            window.open(novncUrl, '_blank', 'width=1024,height=768');
+                            
+                            // Альтернативно можно использовать vncproxy URL
+                            // const novncUrl = `https://${pveHost}:${pvePort}/vncproxy/?vmid=${vmId}&node=${node}`;
+                            
+                            // Обновляем сообщение
+                            document.getElementById('loading').innerHTML = '<span style="color: #00ff41;">noVNC консоль открыта в новом окне. Вы можете вернуться на эту страницу.</span>';
+                        }, 1500);
+                    } else {
+                        // Фоллбэк: просто открываем стандартную консоль Proxmox
+                        const pveHost = '{{ PVE_HOST }}';
+                        const pvePort = {{ PVE_PORT }};
+                        const vmId = data.vm_id;
+                        const node = data.node;
+                        
+                        setTimeout(() => {
+                            const novncUrl = `https://${pveHost}:${pvePort}/?console=kvm&novnc=1&vmid=${vmId}&node=${node}&resize=off`;
+                            window.open(novncUrl, '_blank', 'width=1024,height=768');
+                            document.getElementById('loading').innerHTML = '<span style="color: #00ff41;">noVNC консоль открыта в новом окне. Вы можете вернуться на эту страницу.</span>';
+                        }, 1500);
+                    }
                 });
 
                 socket.on('terminal_output', (data) => {

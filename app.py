@@ -572,21 +572,71 @@ def get_container_console_ticket(vm_id, node=None, resource_type='container'):
     app.logger.error(f"Failed to get console ticket for {resource_type} {vm_id} after all attempts")
     return None
 
-def get_vm_vnc_proxy_url(vm_id, node=None):
-    """Получить URL для VNC прокси сессии QEMU VM через Proxmox API"""
+def get_vm_vnc_websocket_url(vm_id, node=None):
+    """Получить WebSocket URL для noVNC подключения к QEMU VM через Proxmox API"""
     if node is None:
         node = get_pve_node()
     
-    endpoint = f"nodes/{node}/qemu/{vm_id}/vncproxy"
+    # Загружаем конфигурацию из БД
+    config = load_pve_config()
+    if config:
+        host = config['host']
+        port = config['port']
+        verify_ssl = config['verify_ssl']
+    else:
+        host = PVE_HOST
+        port = PVE_PORT
+        verify_ssl = PVE_VERIFY_SSL
     
-    # Параметры для VNC прокси
+    endpoint = f"nodes/{node}/qemu/{vm_id}/vncwebsocket"
+    
+    # Параметры для VNC WebSocket
     data = {
-        'websocket': 1  # Запрашиваем WebSocket URL
+        'port': 5900,  # Стандартный порт VNC
+        'vncticket': ''  # Будет заполнен после получения тикета
     }
     
-    result = pve_api_request('POST', endpoint, data)
+    # Сначала получаем обычный vncproxy тикет
+    proxy_endpoint = f"nodes/{node}/qemu/{vm_id}/vncproxy"
+    proxy_data = {'websocket': 1}
+    proxy_result = pve_api_request('POST', proxy_endpoint, proxy_data)
+    
+    if not proxy_result or 'data' not in proxy_result:
+        app.logger.error(f"Failed to get VNC proxy ticket for VM {vm_id}")
+        return None
+    
+    ticket_data = proxy_result['data']
+    ticket = ticket_data.get('ticket', '')
+    port_vnc = ticket_data.get('port', 5900)
+    
+    # Теперь получаем WebSocket URL
+    result = pve_api_request('POST', endpoint, {'port': port_vnc})
+    
     if result and 'data' in result:
-        return result['data']
+        ws_data = result['data']
+        # Формируем полный WebSocket URL для noVNC
+        ws_url = f"wss://{host}:{port}/api2/json/nodes/{node}/qemu/{vm_id}/vncwebsocket?port={port_vnc}&vncticket={urllib.parse.quote(ticket)}"
+        
+        return {
+            'websocket_url': ws_url,
+            'ticket': ticket,
+            'port': port_vnc,
+            'host': host,
+            'vmid': vm_id,
+            'node': node
+        }
+    
+    # Альтернативный вариант: используем данные из vncproxy напрямую
+    if 'websocket' in ticket_data:
+        ws_url = f"wss://{host}:{port}{ticket_data['websocket']}"
+        return {
+            'websocket_url': ws_url,
+            'ticket': ticket,
+            'port': port_vnc,
+            'host': host,
+            'vmid': vm_id,
+            'node': node
+        }
     
     return None
 
@@ -1576,11 +1626,22 @@ def handle_terminal_init(data):
     
     # Для VM используем noVNC, для LXC - SSH
     if resource_type == 'vm':
-        # Для VM возвращаем сигнал для переключения на noVNC
+        # Для VM получаем WebSocket URL для noVNC
+        vnc_ws_info = get_vm_vnc_websocket_url(session_data['pve_vm_id'], session_data['pve_node'])
+        
+        if not vnc_ws_info:
+            emit('terminal_output', {'error': 'Не удалось получить доступ к консоли VM'})
+            return
+        
+        # Для VM возвращаем сигнал с WebSocket URL для noVNC
         emit('novnc_required', {
             'vm_id': session_data['pve_vm_id'],
             'node': session_data['pve_node'],
-            'message': 'Для виртуальных машин используется noVNC консоль. Перенаправление...'
+            'websocket_url': vnc_ws_info.get('websocket_url', ''),
+            'ticket': vnc_ws_info.get('ticket', ''),
+            'port': vnc_ws_info.get('port', 5900),
+            'host': vnc_ws_info.get('host', PVE_HOST),
+            'message': 'Для виртуальных машин используется noVNC консоль. Подключение...'
         })
         return
     
