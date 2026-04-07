@@ -435,29 +435,36 @@ def get_resource_status(vm_id, node=None, resource_type='container'):
         return get_container_status(vm_id, node)
 
 def get_container_ip(vm_id, node=None, resource_type='container'):
-    """Получить IP-адрес контейнера или VM из Proxmox через API (включая DHCP) с повторными попытками"""
+    """Получить IP-адрес контейнера LXC из Proxmox через API (включая DHCP) с повторными попытками
+    
+    Для QEMU VM эта функция не должна вызываться - они используют noVNC для доступа.
+    """
     if node is None:
         node = get_pve_node()
-    
-    # Для QEMU VM используем другой endpoint
-    api_type = 'qemu' if resource_type == 'vm' else 'lxc'
-    
+
+    # Для QEMU VM не пытаемся получить IP - они используют noVNC
+    if resource_type == 'vm':
+        app.logger.warning(f"get_container_ip called for VM {vm_id}, but VMs should use noVNC")
+        return None
+
+    api_type = 'lxc'
+
     # Делаем несколько попыток получения IP с интервалом в 2 секунды
     max_attempts = 30
     for attempt in range(max_attempts):
         app.logger.info(f"Attempt {attempt+1}/{max_attempts} to get IP for {api_type} {vm_id}")
-        
-        # Пробуем получить IP через эндпоинт интерфейсов (работает для DHCP)
+
+        # Для LXC пробуем получить IP через эндпоинт интерфейсов (работает для DHCP)
         endpoint = f"nodes/{node}/{api_type}/{vm_id}/interfaces"
         result = pve_api_request('GET', endpoint)
-        
+
         app.logger.info(f"API Response for interfaces: {result}")
-        
+
         if result and 'data' in result:
             interfaces = result['data']
             app.logger.info(f"Got interfaces data: {interfaces}")
             app.logger.info(f"Interfaces type: {type(interfaces)}")
-            
+
             # Обработка разных форматов ответа
             if isinstance(interfaces, list):
                 for iface in interfaces:
@@ -466,11 +473,11 @@ def get_container_ip(vm_id, node=None, resource_type='container'):
                     iface_name = iface.get('name', '')
                     if iface_name == 'lo':
                         continue
-                    
+
                     # Проверяем ip-addresses (список словарей) - основной формат
                     ips = iface.get('ip-addresses', [])
                     app.logger.info(f"Found ip-addresses: {ips}")
-                    
+
                     if isinstance(ips, list):
                         for ip_info in ips:
                             if isinstance(ip_info, dict):
@@ -480,13 +487,13 @@ def get_container_ip(vm_id, node=None, resource_type='container'):
                                 if ip and ':' not in ip and ip_type == 'inet':  # Только IPv4
                                     app.logger.info(f"SUCCESS: Found valid IPv4 address: {ip}")
                                     return ip
-                    
+
                     # Резервная проверка для ip-address (единственное число)
                     ipaddr = iface.get('ip-address')
                     if ipaddr and ':' not in ipaddr:
                         app.logger.info(f"Found IP address (single): {ipaddr}")
                         return ipaddr
-                        
+
             elif isinstance(interfaces, dict):
                 # Если пришел один интерфейс вместо списка
                 app.logger.info(f"Single interface received: {interfaces}")
@@ -498,11 +505,11 @@ def get_container_ip(vm_id, node=None, resource_type='container'):
                             if ip and ':' not in ip:
                                 app.logger.info(f"Found IP address in single interface: {ip}")
                                 return ip
-        
-        # Если не нашли через interfaces, пробуем конфиг (статический IP)
+
+        # Пробуем получить статический IP из конфига
         endpoint = f"nodes/{node}/{api_type}/{vm_id}/config"
         config_result = pve_api_request('GET', endpoint)
-        
+
         if config_result and 'data' in config_result:
             config = config_result['data']
             app.logger.info(f"Got config data: {config}")
@@ -514,25 +521,34 @@ def get_container_ip(vm_id, node=None, resource_type='container'):
                         ip_addr = ip_part.split('/')[0]
                         app.logger.info(f"Found static IP in config: {ip_addr}")
                         return ip_addr
-        
+
         app.logger.warning(f"Attempt {attempt+1} failed to find valid IPv4 address")
         if attempt < max_attempts - 1:
             import time
             time.sleep(2)
-    
+
     app.logger.error(f"Failed to get IP address for {api_type} {vm_id} after {max_attempts} attempts")
     return None
 
+
 def get_vnc_proxy_url(vm_id, node=None, resource_type='container'):
-    """Получить информацию для VNC/SSH подключения к контейнеру или VM"""
+    """Получить информацию для SSH подключения к контейнеру (LXC)
+    
+    Для QEMU VM эта функция не используется - они подключаются через noVNC
+    """
     if node is None:
         node = get_pve_node()
     
-    # Получаем IP-адрес через API (работает для LXC и QEMU)
+    # Для QEMU VM не пытаемся получить IP - они используют noVNC
+    if resource_type == 'vm':
+        app.logger.warning(f"get_vnc_proxy_url called for VM {vm_id}, but VMs use noVNC directly")
+        return None
+    
+    # Получаем IP-адрес через API (только для LXC)
     container_ip = get_container_ip(vm_id, node, resource_type)
     
     if container_ip:
-        # Возвращаем информацию для SSH/VNC подключения
+        # Возвращаем информацию для SSH подключения
         return {
             'host': container_ip,
             'port': 22,
@@ -1153,8 +1169,11 @@ def terminal(session_token):
     session_data = dict(session_data)
     resource_type = session_data.get('resource_type', 'container')
     
-    # Получаем URL для VNC прокси сессии через Proxmox API
-    vnc_proxy_url = get_vnc_proxy_url(session_data['pve_vm_id'], session_data['pve_node'], resource_type)
+    # Для VM не пытаемся получить VNC proxy URL - они используют WebSocket noVNC напрямую через handle_terminal_init
+    vnc_proxy_url = None
+    if resource_type != 'vm':
+        # Получаем URL для VNC прокси сессии через Proxmox API (только для LXC)
+        vnc_proxy_url = get_vnc_proxy_url(session_data['pve_vm_id'], session_data['pve_node'], resource_type)
     
     # Загружаем конфигурацию Proxmox из БД для передачи в шаблон
     config = load_pve_config()
